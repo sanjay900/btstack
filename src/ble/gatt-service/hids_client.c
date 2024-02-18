@@ -610,7 +610,12 @@ static void handle_notification_event(uint8_t packet_type, uint16_t channel, uin
 static void handle_report_event(uint8_t packet_type, uint16_t channel, uint8_t *packet, uint16_t size) {
     UNUSED(packet_type);
     UNUSED(channel);
-    
+
+    if (hci_event_packet_get_type(packet) == GATT_EVENT_QUERY_COMPLETE) {
+        hids_client_t * client = hids_get_client_for_con_handle(gatt_event_query_complete_get_handle(packet));
+        client->state = HIDS_CLIENT_STATE_CONNECTED;
+        return;
+    }
     if (hci_event_packet_get_type(packet) != GATT_EVENT_CHARACTERISTIC_VALUE_QUERY_RESULT) return;
     
     hids_client_t * client = hids_get_client_for_con_handle(gatt_event_characteristic_value_query_result_get_handle(packet));

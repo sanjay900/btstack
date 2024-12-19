@@ -1015,6 +1015,9 @@ typedef uint8_t sm_key_t[16];
  */
 #define HCI_SUBEVENT_LE_ENHANCED_CONNECTION_COMPLETE_V2           0x29u
 
+/** Internal BTstack events */
+#define BTSTACK_EVENT_FIRST                               BTSTACK_EVENT_STATE
+
 /**
  * @format 1
  * @param state
@@ -1979,15 +1982,45 @@ typedef uint8_t sm_key_t[16];
 #define GAP_SUBEVENT_CIG_CREATED                                 0x06u
 
 /**
- * @format 1111HH
+ * @format 1111HH211111
  * @param subevent_code
  * @param status
  * @param cig_id
  * @param cis_id
  * @param cis_con_handle
  * @param acl_con_handle
+ * @param iso_interval_1250us
+ * @param number_of_subevents
+ * @param burst_number_c_to_p
+ * @param burst_number_p_to_c
+ * @param flush_timeout_c_to_p
+ * @param flush_timeout_p_to_c
  */
+
 #define GAP_SUBEVENT_CIS_CREATED                                 0x07u
+
+/**
+ * Generic version of
+ * - HCI_SUBEVENT_LE_CONNECTION_COMPLETE
+ * - HCI_SUBEVENT_LE_ENHANCED_CONNECTION_COMPLETE_V1
+ * - HCI_SUBEVENT_LE_ENHANCED_CONNECTION_COMPLETE_V2
+ * @format 11H11BBB22211H
+ * @param subevent_code
+ * @param status
+ * @param connection_handle
+ * @param role
+ * @param peer_address_type
+ * @param peer_address
+ * @param local_resolvable_private_address - 00..00 if not valid
+ * @param peer_resolvable_private_address  - 00..00 if not valid
+ * @param conn_interval
+ * @param conn_latency
+ * @param supervision_timeout
+ * @param master_clock_accuracy
+ * @param advertising_handle - 0xff   if not set
+ * @param sync_handle        - 0xffff if not set
+ */
+#define GAP_SUBEVENT_LE_CONNECTION_COMPLETE                     0x08u
 
 /** HSP Subevent */
 
@@ -4126,13 +4159,22 @@ typedef uint8_t sm_key_t[16];
 #define GATTSERVICE_SUBEVENT_HID_SERVICE_REPORTS_NOTIFICATION             0x17u
 
 /**
+ * @format 1211
+ * @param subevent_code
+ * @param hids_cid
+ * @param service_index
+ * @param report_id
+*/
+#define GATTSERVICE_SUBEVENT_HID_REPORT_WRITTEN                           0x18u
+
+/**
  * @format 1H22
  * @param subevent_code
  * @param con_handle
  * @param max_scan_interval
  * @param min_scan_window
  */
-#define GATTSERVICE_SUBEVENT_SCAN_PARAMETERS_SERVICE_SCAN_INTERVAL_UPDATE 0x18u
+#define GATTSERVICE_SUBEVENT_SCAN_PARAMETERS_SERVICE_SCAN_INTERVAL_UPDATE 0x19u
 
 // LE Audio
 

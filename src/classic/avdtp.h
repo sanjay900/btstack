@@ -674,6 +674,13 @@ void    avdtp_set_preferred_channel_mode(avdtp_stream_endpoint_t * stream_endpoi
 
 void    avdtp_set_preferred_sbc_channel_mode(avdtp_stream_endpoint_t * stream_endpoint, uint32_t sampling_frequency);
 
+/**
+ * @brief Get highest sampling frequency
+ * @param sampling_frequency_bitmap
+ * @return highest frequency or 0
+ */
+uint16_t avdtp_get_highest_sampling_frequency(uint8_t sampling_frequency_bitmap);
+
 avdtp_channel_mode_t avdtp_choose_sbc_channel_mode(avdtp_stream_endpoint_t * stream_endpoint, uint8_t remote_channel_mode_bitmap);
 avdtp_sbc_allocation_method_t avdtp_choose_sbc_allocation_method(avdtp_stream_endpoint_t * stream_endpoint, uint8_t remote_allocation_method_bitmap);
 uint16_t avdtp_choose_sbc_sampling_frequency(avdtp_stream_endpoint_t * stream_endpoint, uint8_t remote_sampling_frequency_bitmap);
@@ -691,6 +698,11 @@ uint8_t avdtp_get_next_transaction_label(void);
 #ifdef ENABLE_AVDTP_ACCEPTOR_EXPLICIT_START_STREAM_CONFIRMATION
 uint8_t avdtp_start_stream_accept(uint16_t avdtp_cid, uint8_t local_seid);
 uint8_t avdtp_start_stream_reject(uint16_t avdtp_cid, uint8_t local_seid);
+#endif
+
+#ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
+void avdtp_init_fuzz(void);
+void avdtp_packet_handler_fuzz(uint8_t *packet, uint16_t size);
 #endif
 
 #if defined __cplusplus

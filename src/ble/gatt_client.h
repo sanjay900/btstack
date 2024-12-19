@@ -53,6 +53,7 @@ extern "C" {
 
 typedef enum {
     P_READY,
+    P_W2_EMIT_QUERY_COMPLETE_EVENT,
     P_W2_SEND_SERVICE_QUERY,
     P_W4_SERVICE_QUERY_RESULT,
     P_W2_SEND_SERVICE_WITH_UUID_QUERY,
@@ -134,7 +135,7 @@ typedef enum {
     P_W4_CMAC_READY,
     P_W4_CMAC_RESULT,
     P_W2_SEND_SIGNED_WRITE,
-    P_W4_SEND_SINGED_WRITE_DONE,
+    P_W4_SEND_SIGNED_WRITE_DONE,
 
     P_W2_SDP_QUERY,
     P_W4_SDP_QUERY,
@@ -170,7 +171,7 @@ typedef enum {
 
 typedef struct gatt_client{
     btstack_linked_item_t    item;
-    // TODO: rename gatt_client_state -> state
+
     gatt_client_state_t state;
 
     // user callback 
@@ -235,8 +236,8 @@ typedef struct gatt_client{
     uint16_t client_characteristic_configuration_handle;
     uint8_t  client_characteristic_configuration_value[2];
     
-    uint8_t  filter_with_uuid;
-    uint8_t  send_confirmation;
+    bool     filter_with_uuid;
+    bool     send_confirmation;
 
     int      le_device_index;
     uint8_t  cmac[8];
@@ -244,7 +245,7 @@ typedef struct gatt_client{
     btstack_timer_source_t gc_timeout;
 
     uint8_t  security_counter;
-    uint8_t  wait_for_authentication_complete;
+    bool     wait_for_authentication_complete;
     uint8_t  pending_error_code;
 
     bool     reencryption_active;

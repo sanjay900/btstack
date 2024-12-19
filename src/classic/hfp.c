@@ -84,6 +84,9 @@ static btstack_packet_handler_t hfp_ag_callback;
 static btstack_packet_handler_t hfp_hf_rfcomm_packet_handler;
 static btstack_packet_handler_t hfp_ag_rfcomm_packet_handler;
 
+static uint8_t  hfp_hf_indicators_nr;
+static const uint8_t * hfp_hf_indicators;
+
 static uint16_t hfp_allowed_sco_packet_types;
 static hfp_connection_t * hfp_sco_establishment_active;
 
@@ -122,7 +125,8 @@ static const struct {
         {0x000d, 0x02, SCO_PACKET_TYPES_2EV3, CODEC_MASK_OTHER}  // HFP_LINK_SETTINGS_T2
 };
 
-// table 5.8 'mandatory safe settings' for eSCO + similar entries for SCO
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
+// HFP v1.9, table 6.10 'mandatory safe settings' for eSCO + similar entries for SCO
 static const struct hfp_mandatory_safe_setting {
     const uint8_t codec_mask;
     const bool secure_connection_in_use;
@@ -135,6 +139,7 @@ static const struct hfp_mandatory_safe_setting {
         { CODEC_MASK_OTHER, false, HFP_LINK_SETTINGS_T1},
         { CODEC_MASK_OTHER, true,  HFP_LINK_SETTINGS_T2},
 };
+#endif
 
 static const char * hfp_hf_features[] = {
         "EC and/or NR function",
@@ -639,7 +644,7 @@ static hfp_connection_t * create_hfp_connection_context(void){
 
     hfp_reset_context_flags(hfp_connection);
 
-    btstack_linked_list_add(&hfp_connections, (btstack_linked_item_t*)hfp_connection);
+    btstack_linked_list_add_tail(&hfp_connections, (btstack_linked_item_t*)hfp_connection);
     return hfp_connection;
 }
 
@@ -742,15 +747,17 @@ void hfp_create_sdp_record(uint8_t * service, uint32_t service_record_handle, ui
         uint8_t *sppProfile = de_push_sequence(attribute);
         {
             de_add_number(sppProfile,  DE_UUID, DE_SIZE_16, BLUETOOTH_SERVICE_CLASS_HANDSFREE); 
-            de_add_number(sppProfile,  DE_UINT, DE_SIZE_16, 0x0108); // Verision 1.8
+            de_add_number(sppProfile,  DE_UINT, DE_SIZE_16, 0x0109); // Version 1.9
         }
         de_pop_sequence(attribute, sppProfile);
     }
     de_pop_sequence(service, attribute);
 
     // 0x0100 "Service Name"
-    de_add_number(service,  DE_UINT, DE_SIZE_16, 0x0100);
-    de_add_data(service,  DE_STRING, (uint16_t) strlen(name), (uint8_t *) name);
+    if (strlen(name) > 0){
+        de_add_number(service,  DE_UINT, DE_SIZE_16, 0x0100);
+        de_add_data(service,  DE_STRING, (uint16_t) strlen(name), (uint8_t *) name);
+    }
 }
 
 static void hfp_handle_slc_setup_error(hfp_connection_t * hfp_connection, uint8_t status){
@@ -827,11 +834,13 @@ static int hfp_handle_failed_sco_connection(uint8_t status){
 
     log_info("(e)SCO Connection failed 0x%02x", status);
     switch (status){
+        case ERROR_CODE_INVALID_LMP_PARAMETERS_INVALID_LL_PARAMETERS:
         case ERROR_CODE_SCO_AIR_MODE_REJECTED:
         case ERROR_CODE_SCO_INTERVAL_REJECTED:
         case ERROR_CODE_SCO_OFFSET_REJECTED:
         case ERROR_CODE_UNSPECIFIED_ERROR:
         case ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE:
+        case ERROR_CODE_UNSUPPORTED_LMP_PARAMETER_VALUE_UNSUPPORTED_LL_PARAMETER_VALUE:
         case ERROR_CODE_UNSUPPORTED_REMOTE_FEATURE_UNSUPPORTED_LMP_FEATURE:
             break;
         default:
@@ -1776,7 +1785,6 @@ static void parse_sequence(hfp_connection_t * hfp_connection){
             break;
         case HFP_CMD_ENABLE_EXTENDED_AUDIO_GATEWAY_ERROR:
             hfp_connection->enable_extended_audio_gateway_error_report = (uint8_t)btstack_atoi((char*)hfp_connection->line_buffer);
-            hfp_connection->ok_pending = 1;
             hfp_connection->extended_audio_gateway_error = 0;
             break;
         case HFP_CMD_AG_SENT_PHONE_NUMBER:
@@ -1879,6 +1887,15 @@ uint8_t hfp_establish_service_level_connection(bd_addr_t bd_addr, uint16_t servi
     
     bd_addr_copy(connection->remote_addr, bd_addr);
     connection->service_uuid = service_uuid;
+
+    if (local_role == HFP_ROLE_HF) {
+        // setup HF Indicators
+        uint8_t i;
+        for (i=0; i < hfp_hf_indicators_nr; i++){
+            connection->generic_status_indicators[i].uuid = hfp_hf_indicators[i];
+            connection->generic_status_indicators[i].state = 0;
+        }
+    }
 
     hfp_sdp_query_request.callback = &hfp_handle_start_sdp_client_query;
     // ignore ERROR_CODE_COMMAND_DISALLOWED because in that case, we already have requested an SDP callback
@@ -2030,6 +2047,7 @@ void hfp_setup_synchronous_connection(hfp_connection_t * hfp_connection){
 #endif
 }
 
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
 hfp_link_settings_t hfp_safe_settings_for_context(bool use_eSCO, uint8_t negotiated_codec, bool secure_connection_in_use){
     uint8_t i;
     hfp_link_settings_t link_setting = HFP_LINK_SETTINGS_NONE;
@@ -2044,20 +2062,41 @@ hfp_link_settings_t hfp_safe_settings_for_context(bool use_eSCO, uint8_t negotia
     }
     return link_setting;
 }
+#endif
 
 void hfp_accept_synchronous_connection(hfp_connection_t * hfp_connection, bool use_eSCO){
 
     hfp_sco_establishment_active = hfp_connection;
 
-    bool secure_connection_in_use = gap_secure_connection(hfp_connection->acl_handle);
-
     // lookup safe settings based on SCO type, SC use and Codec type
-    hfp_link_settings_t link_setting = hfp_safe_settings_for_context(use_eSCO, hfp_connection->negotiated_codec, secure_connection_in_use);
-    btstack_assert(link_setting != HFP_LINK_SETTINGS_NONE);
+    uint16_t max_latency;
+    uint16_t packet_types;
+    uint16_t retransmission_effort;
 
-    uint16_t max_latency             = hfp_link_settings[(uint8_t) link_setting].max_latency;
-    uint16_t packet_types            = hfp_link_settings[(uint8_t) link_setting].packet_types;
-    uint16_t retransmission_effort   = hfp_link_settings[(uint8_t) link_setting].retransmission_effort;
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
+    hfp_link_settings_t link_setting = HFP_LINK_SETTINGS_NONE;
+    // fallback for non-CVSD codec and SCO connection
+    if ((hfp_connection->negotiated_codec != HFP_CODEC_CVSD) && (use_eSCO == false)){
+        max_latency           = 0xffff;
+        retransmission_effort = 0xff;
+        packet_types          = SCO_PACKET_TYPES_HV3 | SCO_PACKET_TYPES_HV1;
+    } else {
+        // use safe settings from HFP v1.9, table 6.10
+    bool secure_connection_in_use = gap_secure_connection(hfp_connection->acl_handle);
+        link_setting = hfp_safe_settings_for_context(use_eSCO, hfp_connection->negotiated_codec, secure_connection_in_use);
+        max_latency             = hfp_link_settings[(uint8_t) link_setting].max_latency;
+        retransmission_effort   = hfp_link_settings[(uint8_t) link_setting].retransmission_effort;
+        packet_types            = hfp_link_settings[(uint8_t) link_setting].packet_types;
+    }
+#else
+    max_latency           = 0xffff;
+    retransmission_effort = 0xff;
+    if (use_eSCO) {
+        packet_types      = SCO_PACKET_TYPES_EV3 | SCO_PACKET_TYPES_2EV3;
+    } else {
+        packet_types      = SCO_PACKET_TYPES_HV3 | SCO_PACKET_TYPES_HV1;
+    }
+#endif
 
     // transparent data for non-CVSD connections or if codec provided by Controller
     uint16_t sco_voice_setting = hci_get_sco_voice_setting();
@@ -2077,8 +2116,8 @@ void hfp_accept_synchronous_connection(hfp_connection_t * hfp_connection, bool u
     // bits 6-9 are 'don't allow'
     uint16_t packet_types_flipped = packet_types ^ 0x3c0;
 
-    log_info("Sending hci_accept_connection_request for link settings %u: packet types 0x%04x, sco_voice_setting 0x%02x",
-             (uint8_t) link_setting, packet_types, sco_voice_setting);
+    log_info("Sending hci_accept_connection_request: packet types 0x%04x, sco_voice_setting 0x%02x",
+            packet_types, sco_voice_setting);
 
 #if defined(ENABLE_SCO_OVER_PCM) && defined(ENABLE_NXP_PCM_WBS)
     uint8_t radio_coding_format = 3;
@@ -2190,6 +2229,7 @@ void hfp_bcm_write_i2spcm_interface_param(hfp_connection_t * hfp_connection){
 #endif
 
 void hfp_prepare_for_sco(hfp_connection_t * hfp_connection){
+    UNUSED(hfp_connection);
 #ifdef ENABLE_CC256X_ASSISTED_HFP
     hfp_connection->cc256x_send_write_codec_config = true;
     if (hfp_connection->negotiated_codec == HFP_CODEC_MSBC){
@@ -2198,7 +2238,9 @@ void hfp_prepare_for_sco(hfp_connection_t * hfp_connection){
 #endif
 
 #ifdef ENABLE_BCM_PCM_WBS
+#ifndef HAVE_BCM_PCM_NBS_16KHZ
     hfp_connection->bcm_send_write_i2spcm_interface_param = true;
+#endif
     if (hfp_connection->negotiated_codec == HFP_CODEC_MSBC){
         hfp_connection->bcm_send_enable_wbs = true;
     }
@@ -2223,6 +2265,11 @@ void hfp_set_ag_rfcomm_packet_handler(btstack_packet_handler_t handler){
 
 void hfp_set_hf_rfcomm_packet_handler(btstack_packet_handler_t handler){
     hfp_hf_rfcomm_packet_handler = handler;
+}
+
+void hfp_set_hf_indicators(uint8_t indicators_nr, const uint8_t * indicators) {
+    hfp_hf_indicators_nr = indicators_nr;
+    hfp_hf_indicators = indicators;
 }
 
 void hfp_init(void){

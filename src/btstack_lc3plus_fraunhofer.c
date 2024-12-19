@@ -78,7 +78,11 @@ static uint8_t lc3plus_fraunhofer_decoder_configure(void * context, uint32_t sam
     instance->samples_per_frame = btstack_lc3_samples_per_frame(sample_rate, frame_duration);
 
     LC3PLUS_Error error;
+#ifdef ENABLE_HR_MODE
     error = lc3plus_dec_init(decoder, sample_rate, 1, LC3PLUS_PLC_ADVANCED, 0);
+#else
+    error = lc3plus_dec_init(decoder, sample_rate, 1, LC3PLUS_PLC_ADVANCED);
+#endif
     btstack_assert(error == LC3PLUS_OK);
 
     error = lc3plus_dec_set_frame_dms(decoder, duration_us / 100);
@@ -114,6 +118,7 @@ static uint8_t lc3plus_fraunhofer_decoder_decode_signed_16(void * context, const
     if (stride > 1){
         uint16_t i;
         for (i = 0; i < instance->samples_per_frame; i++){
+            // cppcheck-suppress uninitvar ; for stride > 1, output_samples[0] = temp_out, which is initialized by lc3plus_dec16
             pcm_out [i * stride] = temp_out[i];
         }
     }

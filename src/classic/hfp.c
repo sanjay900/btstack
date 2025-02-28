@@ -84,6 +84,9 @@ static btstack_packet_handler_t hfp_ag_callback;
 static btstack_packet_handler_t hfp_hf_rfcomm_packet_handler;
 static btstack_packet_handler_t hfp_ag_rfcomm_packet_handler;
 
+static uint8_t  hfp_hf_indicators_nr;
+static const uint8_t * hfp_hf_indicators;
+
 static uint16_t hfp_allowed_sco_packet_types;
 static hfp_connection_t * hfp_sco_establishment_active;
 
@@ -122,7 +125,8 @@ static const struct {
         {0x000d, 0x02, SCO_PACKET_TYPES_2EV3, CODEC_MASK_OTHER}  // HFP_LINK_SETTINGS_T2
 };
 
-// table 5.8 'mandatory safe settings' for eSCO + similar entries for SCO
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
+// HFP v1.9, table 6.10 'mandatory safe settings' for eSCO + similar entries for SCO
 static const struct hfp_mandatory_safe_setting {
     const uint8_t codec_mask;
     const bool secure_connection_in_use;
@@ -135,6 +139,7 @@ static const struct hfp_mandatory_safe_setting {
         { CODEC_MASK_OTHER, false, HFP_LINK_SETTINGS_T1},
         { CODEC_MASK_OTHER, true,  HFP_LINK_SETTINGS_T2},
 };
+#endif
 
 static const char * hfp_hf_features[] = {
         "EC and/or NR function",
@@ -329,10 +334,10 @@ int join(char * buffer, int buffer_size, uint8_t * values, int values_nr){
     int i;
     int offset = 0;
     for (i = 0; i < (values_nr-1); i++) {
-      offset += snprintf(buffer+offset, buffer_size-offset, "%d,", values[i]); // puts string into buffer
+      offset += btstack_snprintf_assert_complete(buffer+offset, buffer_size-offset, "%d,", values[i]); // puts string into buffer
     }
     if (i<values_nr){
-        offset += snprintf(buffer+offset, buffer_size-offset, "%d", values[i]);
+        offset += btstack_snprintf_assert_complete(buffer+offset, buffer_size-offset, "%d", values[i]);
     }
     return offset;
 }
@@ -343,11 +348,11 @@ int join_bitmap(char * buffer, int buffer_size, uint32_t values, int values_nr){
     int i;
     int offset = 0;
     for (i = 0; i < (values_nr-1); i++) {
-      offset += snprintf(buffer+offset, buffer_size-offset, "%d,", get_bit(values,i)); // puts string into buffer
+      offset += btstack_snprintf_assert_complete(buffer+offset, buffer_size-offset, "%d,", get_bit(values,i)); // puts string into buffer
     }
     
     if (i<values_nr){
-        offset += snprintf(buffer+offset, buffer_size-offset, "%d", get_bit(values,i));
+        offset += btstack_snprintf_assert_complete(buffer+offset, buffer_size-offset, "%d", get_bit(values,i));
     }
     return offset;
 }
@@ -637,9 +642,14 @@ static hfp_connection_t * create_hfp_connection_context(void){
     hfp_connection->acl_handle = HCI_CON_HANDLE_INVALID;
     hfp_connection->sco_handle = HCI_CON_HANDLE_INVALID;
 
+    // HF only
+    hfp_connection->hf_call_status      = HFP_CALL_STATUS_NO_HELD_OR_ACTIVE_CALLS;
+    hfp_connection->hf_callsetup_status = HFP_CALLSETUP_STATUS_NO_CALL_SETUP_IN_PROGRESS;
+    hfp_connection->hf_callheld_status  = HFP_CALLHELD_STATUS_NO_CALLS_HELD;
+
     hfp_reset_context_flags(hfp_connection);
 
-    btstack_linked_list_add(&hfp_connections, (btstack_linked_item_t*)hfp_connection);
+    btstack_linked_list_add_tail(&hfp_connections, (btstack_linked_item_t*)hfp_connection);
     return hfp_connection;
 }
 
@@ -742,15 +752,17 @@ void hfp_create_sdp_record(uint8_t * service, uint32_t service_record_handle, ui
         uint8_t *sppProfile = de_push_sequence(attribute);
         {
             de_add_number(sppProfile,  DE_UUID, DE_SIZE_16, BLUETOOTH_SERVICE_CLASS_HANDSFREE); 
-            de_add_number(sppProfile,  DE_UINT, DE_SIZE_16, 0x0108); // Verision 1.8
+            de_add_number(sppProfile,  DE_UINT, DE_SIZE_16, 0x0109); // Version 1.9
         }
         de_pop_sequence(attribute, sppProfile);
     }
     de_pop_sequence(service, attribute);
 
     // 0x0100 "Service Name"
-    de_add_number(service,  DE_UINT, DE_SIZE_16, 0x0100);
-    de_add_data(service,  DE_STRING, (uint16_t) strlen(name), (uint8_t *) name);
+    if (strlen(name) > 0){
+        de_add_number(service,  DE_UINT, DE_SIZE_16, 0x0100);
+        de_add_data(service,  DE_STRING, (uint16_t) strlen(name), (uint8_t *) name);
+    }
 }
 
 static void hfp_handle_slc_setup_error(hfp_connection_t * hfp_connection, uint8_t status){
@@ -827,11 +839,13 @@ static int hfp_handle_failed_sco_connection(uint8_t status){
 
     log_info("(e)SCO Connection failed 0x%02x", status);
     switch (status){
+        case ERROR_CODE_INVALID_LMP_PARAMETERS_INVALID_LL_PARAMETERS:
         case ERROR_CODE_SCO_AIR_MODE_REJECTED:
         case ERROR_CODE_SCO_INTERVAL_REJECTED:
         case ERROR_CODE_SCO_OFFSET_REJECTED:
         case ERROR_CODE_UNSPECIFIED_ERROR:
         case ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE:
+        case ERROR_CODE_UNSUPPORTED_LMP_PARAMETER_VALUE_UNSUPPORTED_LL_PARAMETER_VALUE:
         case ERROR_CODE_UNSUPPORTED_REMOTE_FEATURE_UNSUPPORTED_LMP_FEATURE:
             break;
         default:
@@ -1102,6 +1116,15 @@ void hfp_handle_rfcomm_event(uint8_t packet_type, uint16_t channel, uint8_t *pac
             bd_addr_copy(hfp_connection->remote_addr, event_addr);
             hfp_connection->state = HFP_EXCHANGE_SUPPORTED_FEATURES;
             
+            if (local_role == HFP_ROLE_HF) {
+                // setup HF Indicators
+                uint8_t i;
+                for (i=0; i < hfp_hf_indicators_nr; i++){
+                    hfp_connection->generic_status_indicators[i].uuid = hfp_hf_indicators[i];
+                    hfp_connection->generic_status_indicators[i].state = 0;
+                }
+            }
+
             rfcomm_request_can_send_now_event(hfp_connection->rfcomm_cid);
             break;
 
@@ -1172,10 +1195,12 @@ static hfp_command_entry_t hfp_ag_command_table[] = {
     { "AT+CNUM",   HFP_CMD_GET_SUBSCRIBER_NUMBER_INFORMATION },
     { "AT+COPS=",  HFP_CMD_QUERY_OPERATOR_SELECTION_NAME_FORMAT },
     { "AT+COPS?",  HFP_CMD_QUERY_OPERATOR_SELECTION_NAME },
+    { "AT+IPHONEACCEV=", HFP_CMD_APPLE_ACCESSORY_STATE },
     { "AT+NREC=",  HFP_CMD_TURN_OFF_EC_AND_NR, },
     { "AT+VGM=",   HFP_CMD_SET_MICROPHONE_GAIN },
     { "AT+VGS=",   HFP_CMD_SET_SPEAKER_GAIN },
     { "AT+VTS=",   HFP_CMD_TRANSMIT_DTMF_CODES },
+    { "AT+XAPL=",  HFP_CMD_APPLE_ACCESSORY_INFORMATION },
     { "ATA",       HFP_CMD_CALL_ANSWERED },
 };
 
@@ -1200,6 +1225,7 @@ static hfp_command_entry_t hfp_hf_command_table[] = {
     { "+VGM=",  HFP_CMD_SET_MICROPHONE_GAIN },
     { "+VGS:",  HFP_CMD_SET_SPEAKER_GAIN},
     { "+VGS=",  HFP_CMD_SET_SPEAKER_GAIN},
+    { "+XAPL=",  HFP_CMD_APPLE_DEVICE_INFORMATION },
     { "ERROR",  HFP_CMD_ERROR},
     { "NOP",    HFP_CMD_NONE}, // dummy command used by unit tests
     { "OK",     HFP_CMD_OK },
@@ -1248,7 +1274,7 @@ static hfp_command_t parse_command(const char * line_buffer, int isHandsFree){
         int match = strcmp(line_buffer, entry->command);
         if (match < 0){
             // search term is lower than middle element
-            if (right == 0) break;
+            if (middle == 0) break;
             right = middle - 1;
         } else if (match == 0){
             return entry->command_id;
@@ -1776,7 +1802,6 @@ static void parse_sequence(hfp_connection_t * hfp_connection){
             break;
         case HFP_CMD_ENABLE_EXTENDED_AUDIO_GATEWAY_ERROR:
             hfp_connection->enable_extended_audio_gateway_error_report = (uint8_t)btstack_atoi((char*)hfp_connection->line_buffer);
-            hfp_connection->ok_pending = 1;
             hfp_connection->extended_audio_gateway_error = 0;
             break;
         case HFP_CMD_AG_SENT_PHONE_NUMBER:
@@ -1835,6 +1860,52 @@ static void parse_sequence(hfp_connection_t * hfp_connection){
             }
             hfp_connection->parser_item_index++;
             break;
+        case HFP_CMD_APPLE_ACCESSORY_INFORMATION:
+            switch (hfp_connection->parser_item_index){
+                case 0:
+                    hfp_connection->apple_accessory_vendor_id = 0;
+                    for (i = 0 ; i < 4; i++){
+                        hfp_connection->apple_accessory_vendor_id = (hfp_connection->apple_accessory_vendor_id << 4) | nibble_for_char(hfp_connection->line_buffer[i]);
+                    }
+                    break;
+                case 1:
+                    hfp_connection->apple_accessory_product_id = 0;
+                    for (i = 0 ; i < 4; i++){
+                        hfp_connection->apple_accessory_product_id = (hfp_connection->apple_accessory_product_id << 4) | nibble_for_char(hfp_connection->line_buffer[i]);
+                    }
+                    break;
+                case 2:
+                    btstack_strcpy(hfp_connection->apple_accessory_version, sizeof(hfp_connection->apple_accessory_version), (const char *) hfp_connection->line_buffer);
+                    break;
+                case 3:
+                    hfp_connection->apple_accessory_features = btstack_atoi((char *)hfp_connection->line_buffer);
+                    break;
+                default:
+                    break;
+            }
+            hfp_connection->parser_item_index++;
+            break;
+        case HFP_CMD_APPLE_ACCESSORY_STATE:
+            // ignore K/V count
+            if (hfp_connection->parser_item_index > 0){
+                if ((hfp_connection->parser_item_index & 1) == 1){
+                    hfp_connection->apple_accessory_key = btstack_atoi((char *)hfp_connection->line_buffer);
+                } else {
+                    switch (hfp_connection->apple_accessory_key){
+                        case 1:
+                            hfp_connection->apple_accessory_battery_level = btstack_atoi((char *)hfp_connection->line_buffer);
+                            break;
+                        case 2:
+                            hfp_connection->apple_accessory_docked = btstack_atoi((char *)hfp_connection->line_buffer);
+                            break;
+                        default:
+                            break;
+                    }
+                }
+            }
+            hfp_connection->parser_item_index++;
+            break;
+
         default:
             break;
     }  
@@ -2030,6 +2101,7 @@ void hfp_setup_synchronous_connection(hfp_connection_t * hfp_connection){
 #endif
 }
 
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
 hfp_link_settings_t hfp_safe_settings_for_context(bool use_eSCO, uint8_t negotiated_codec, bool secure_connection_in_use){
     uint8_t i;
     hfp_link_settings_t link_setting = HFP_LINK_SETTINGS_NONE;
@@ -2044,20 +2116,41 @@ hfp_link_settings_t hfp_safe_settings_for_context(bool use_eSCO, uint8_t negotia
     }
     return link_setting;
 }
+#endif
 
 void hfp_accept_synchronous_connection(hfp_connection_t * hfp_connection, bool use_eSCO){
 
     hfp_sco_establishment_active = hfp_connection;
 
-    bool secure_connection_in_use = gap_secure_connection(hfp_connection->acl_handle);
-
     // lookup safe settings based on SCO type, SC use and Codec type
-    hfp_link_settings_t link_setting = hfp_safe_settings_for_context(use_eSCO, hfp_connection->negotiated_codec, secure_connection_in_use);
-    btstack_assert(link_setting != HFP_LINK_SETTINGS_NONE);
+    uint16_t max_latency;
+    uint16_t packet_types;
+    uint16_t retransmission_effort;
 
-    uint16_t max_latency             = hfp_link_settings[(uint8_t) link_setting].max_latency;
-    uint16_t packet_types            = hfp_link_settings[(uint8_t) link_setting].packet_types;
-    uint16_t retransmission_effort   = hfp_link_settings[(uint8_t) link_setting].retransmission_effort;
+#ifdef ENABLE_HFP_HF_SAFE_SETTINGS
+    hfp_link_settings_t link_setting = HFP_LINK_SETTINGS_NONE;
+    // fallback for non-CVSD codec and SCO connection
+    if ((hfp_connection->negotiated_codec != HFP_CODEC_CVSD) && (use_eSCO == false)){
+        max_latency           = 0xffff;
+        retransmission_effort = 0xff;
+        packet_types          = SCO_PACKET_TYPES_HV3 | SCO_PACKET_TYPES_HV1;
+    } else {
+        // use safe settings from HFP v1.9, table 6.10
+    bool secure_connection_in_use = gap_secure_connection(hfp_connection->acl_handle);
+        link_setting = hfp_safe_settings_for_context(use_eSCO, hfp_connection->negotiated_codec, secure_connection_in_use);
+        max_latency             = hfp_link_settings[(uint8_t) link_setting].max_latency;
+        retransmission_effort   = hfp_link_settings[(uint8_t) link_setting].retransmission_effort;
+        packet_types            = hfp_link_settings[(uint8_t) link_setting].packet_types;
+    }
+#else
+    max_latency           = 0xffff;
+    retransmission_effort = 0xff;
+    if (use_eSCO) {
+        packet_types      = SCO_PACKET_TYPES_EV3 | SCO_PACKET_TYPES_2EV3;
+    } else {
+        packet_types      = SCO_PACKET_TYPES_HV3 | SCO_PACKET_TYPES_HV1;
+    }
+#endif
 
     // transparent data for non-CVSD connections or if codec provided by Controller
     uint16_t sco_voice_setting = hci_get_sco_voice_setting();
@@ -2077,8 +2170,8 @@ void hfp_accept_synchronous_connection(hfp_connection_t * hfp_connection, bool u
     // bits 6-9 are 'don't allow'
     uint16_t packet_types_flipped = packet_types ^ 0x3c0;
 
-    log_info("Sending hci_accept_connection_request for link settings %u: packet types 0x%04x, sco_voice_setting 0x%02x",
-             (uint8_t) link_setting, packet_types, sco_voice_setting);
+    log_info("Sending hci_accept_connection_request: packet types 0x%04x, sco_voice_setting 0x%02x",
+            packet_types, sco_voice_setting);
 
 #if defined(ENABLE_SCO_OVER_PCM) && defined(ENABLE_NXP_PCM_WBS)
     uint8_t radio_coding_format = 3;
@@ -2190,6 +2283,7 @@ void hfp_bcm_write_i2spcm_interface_param(hfp_connection_t * hfp_connection){
 #endif
 
 void hfp_prepare_for_sco(hfp_connection_t * hfp_connection){
+    UNUSED(hfp_connection);
 #ifdef ENABLE_CC256X_ASSISTED_HFP
     hfp_connection->cc256x_send_write_codec_config = true;
     if (hfp_connection->negotiated_codec == HFP_CODEC_MSBC){
@@ -2198,7 +2292,9 @@ void hfp_prepare_for_sco(hfp_connection_t * hfp_connection){
 #endif
 
 #ifdef ENABLE_BCM_PCM_WBS
+#ifndef HAVE_BCM_PCM_NBS_16KHZ
     hfp_connection->bcm_send_write_i2spcm_interface_param = true;
+#endif
     if (hfp_connection->negotiated_codec == HFP_CODEC_MSBC){
         hfp_connection->bcm_send_enable_wbs = true;
     }
@@ -2223,6 +2319,11 @@ void hfp_set_ag_rfcomm_packet_handler(btstack_packet_handler_t handler){
 
 void hfp_set_hf_rfcomm_packet_handler(btstack_packet_handler_t handler){
     hfp_hf_rfcomm_packet_handler = handler;
+}
+
+void hfp_set_hf_indicators(uint8_t indicators_nr, const uint8_t * indicators) {
+    hfp_hf_indicators_nr = indicators_nr;
+    hfp_hf_indicators = indicators;
 }
 
 void hfp_init(void){
@@ -2311,6 +2412,10 @@ void hfp_log_rfcomm_message(const char * tag, uint8_t * packet, uint16_t size){
     }
     printable[i] = 0;
     log_info("%s: '%s'", tag, printable);
+#else
+    UNUSED(tag);
+    UNUSED(packet);
+    UNUSED(size);
 #endif
 }
 

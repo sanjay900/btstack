@@ -54,12 +54,12 @@
 #include "ble/core.h"
 #include "ble/le_device_db.h"
 #include "ble/sm.h"
+#include "bluetooth_psm.h"
 #include "btstack_debug.h"
 #include "btstack_event.h"
 #include "btstack_memory.h"
 #include "btstack_run_loop.h"
 #include "gap.h"
-#include "hci.h"
 #include "hci_dump.h"
 #include "l2cap.h"
 #include "btstack_tlv.h"
@@ -76,6 +76,8 @@
 #ifndef NVN_NUM_GATT_SERVER_CCC
 #define NVN_NUM_GATT_SERVER_CCC 20
 #endif
+
+#define ATT_SERVICE_FLAGS_DELAYED_RESPONSE (1u<<0u)
 
 static void att_run_for_context(att_server_t * att_server, att_connection_t * att_connection);
 static att_write_callback_t att_server_write_callback_for_handle(uint16_t handle);
@@ -112,14 +114,9 @@ static att_write_callback_t                   att_server_client_write_callback;
 // round robin
 static hci_con_handle_t att_server_last_can_send_now = HCI_CON_HANDLE_INVALID;
 
+static uint8_t att_server_flags;
+
 #ifdef ENABLE_GATT_OVER_EATT
-typedef struct {
-    btstack_linked_item_t item;
-    att_server_t     att_server;
-    att_connection_t att_connection;
-    uint8_t * receive_buffer;
-    uint8_t * send_buffer;
-} att_server_eatt_bearer_t;
 static att_server_eatt_bearer_t * att_server_eatt_bearer_for_con_handle(hci_con_handle_t con_handle);
 static btstack_linked_list_t att_server_eatt_bearer_pool;
 static btstack_linked_list_t att_server_eatt_bearer_active;
@@ -303,16 +300,16 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
             
         case HCI_EVENT_PACKET:
             switch (hci_event_packet_get_type(packet)) {
-                case HCI_EVENT_LE_META:
-                    switch (packet[2]) {
-                        case HCI_SUBEVENT_LE_CONNECTION_COMPLETE:
-                            con_handle = little_endian_read_16(packet, 4);
+                case HCI_EVENT_META_GAP:
+                    switch (hci_event_gap_meta_get_subevent_code(packet)) {
+                        case GAP_SUBEVENT_LE_CONNECTION_COMPLETE:
+                            con_handle = gap_subevent_le_connection_complete_get_connection_handle(packet);
                             hci_connection = hci_connection_for_handle(con_handle);
                             if (!hci_connection) break;
                             att_server = &hci_connection->att_server;
                         	// store connection info
-                        	att_server->peer_addr_type = packet[7];
-                            reverse_bd_addr(&packet[8], att_server->peer_address);
+                        	att_server->peer_addr_type = gap_subevent_le_connection_complete_get_peer_address_type(packet);
+                            gap_subevent_le_connection_complete_get_peer_address(packet, att_server->peer_address);
                             att_connection = &hci_connection->att_connection;
                             att_connection->con_handle = con_handle;
                             // reset connection properties
@@ -328,14 +325,23 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
 		                	att_connection->authorized = 0u;
                             // workaround: identity resolving can already be complete, at least store result
                             att_server->ir_le_device_db_index = sm_le_device_index(con_handle);
-                            att_server->ir_lookup_active = 0u;
-                            att_server->pairing_active = 0u;
-                            // notify all - old
-                            att_emit_event_to_all(packet, size);
+                            att_server->ir_lookup_active = false;
+                            att_server->pairing_active = false;
                             // notify all - new
                             att_emit_connected_event(att_server, att_connection);
                             break;
+                        default:
+                            break;
+                    }
+                    break;
 
+                case HCI_EVENT_LE_META:
+                    switch (hci_event_le_meta_get_subevent_code(packet)) {
+                        case HCI_SUBEVENT_LE_CONNECTION_COMPLETE:
+                            // forward LE Connection Complete event to keep backward compatibility
+                            // deprecated: please register hci handler with hci_add_event_handler or handle ATT_EVENT_CONNECTED
+                            att_emit_event_to_all(packet, size);
+                            break;
                         default:
                             break;
                     }
@@ -359,7 +365,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                         att_connection->encryption_key_size, att_connection->authenticated, att_connection->secure_connection);
                     if (hci_event_packet_get_type(packet) == HCI_EVENT_ENCRYPTION_CHANGE){
                         // restore CCC values when encrypted for LE Connections
-                        if (hci_event_encryption_change_get_encryption_enabled(packet) != 0){
+                        if (hci_event_encryption_change_get_encryption_enabled(packet) != 0u){
                             att_server_persistent_ccc_restore(att_server, att_connection);
                         } 
                     }
@@ -375,7 +381,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     att_connection = &hci_connection->att_connection;
                     att_clear_transaction_queue(att_connection);
                     att_connection->con_handle = 0;
-                    att_server->pairing_active = 0;
+                    att_server->pairing_active = false;
                     att_server->state = ATT_SERVER_IDLE;
                     if (att_server->value_indication_handle != 0u){
                         btstack_run_loop_remove_timer(&att_server->value_indication_timer);
@@ -396,7 +402,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     if (!hci_connection) break;
                     att_server = &hci_connection->att_server;
                     log_info("SM_EVENT_IDENTITY_RESOLVING_STARTED");
-                    att_server->ir_lookup_active = 1;
+                    att_server->ir_lookup_active = true;
                     break;
                 case SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED:
                     con_handle = sm_event_identity_created_get_handle(packet);
@@ -404,7 +410,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     if (!hci_connection) return;
                     att_connection = &hci_connection->att_connection;
                     att_server = &hci_connection->att_server;
-                    att_server->ir_lookup_active = 0;
+                    att_server->ir_lookup_active = false;
                     att_server->ir_le_device_db_index = sm_event_identity_resolving_succeeded_get_index(packet);
                     log_info("SM_EVENT_IDENTITY_RESOLVING_SUCCEEDED");
                     att_run_for_context(att_server, att_connection);
@@ -416,7 +422,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     att_connection = &hci_connection->att_connection;
                     att_server = &hci_connection->att_server;
                     log_info("SM_EVENT_IDENTITY_RESOLVING_FAILED");
-                    att_server->ir_lookup_active = 0;
+                    att_server->ir_lookup_active = false;
                     att_server->ir_le_device_db_index = -1;
                     att_run_for_context(att_server, att_connection);
                     break;
@@ -433,7 +439,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     if (!hci_connection) break;
                     att_server = &hci_connection->att_server;
                     log_info("SM Pairing started");
-                    att_server->pairing_active = 1;
+                    att_server->pairing_active = true;
                     if (att_server->ir_le_device_db_index < 0) break;
                     att_server_persistent_ccc_clear(att_server);
                     // index not valid anymore
@@ -447,7 +453,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     if (!hci_connection) return;
                     att_connection = &hci_connection->att_connection;
                     att_server = &hci_connection->att_server;
-                    att_server->pairing_active = 0;
+                    att_server->pairing_active = false;
                     att_server->ir_le_device_db_index = sm_event_identity_created_get_index(packet);
                     att_run_for_context(att_server, att_connection);
                     break;
@@ -459,7 +465,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
                     if (!hci_connection) return;
                     att_connection = &hci_connection->att_connection;
                     att_server = &hci_connection->att_server;
-                    att_server->pairing_active = 0;
+                    att_server->pairing_active = false;
                     att_run_for_context(att_server, att_connection);
                     break;
 
@@ -486,6 +492,7 @@ static void att_server_event_packet_handler (uint8_t packet_type, uint16_t chann
 static uint8_t
 att_server_send_prepared(const att_server_t *att_server, const att_connection_t *att_connection, uint8_t *buffer,
                          uint16_t size) {
+    UNUSED(buffer);
     uint8_t status = ERROR_CODE_SUCCESS;
     switch (att_server->bearer_type) {
         case ATT_BEARER_UNENHANCED_LE:
@@ -542,6 +549,40 @@ static void att_signed_write_handle_cmac_result(uint8_t hash[8]){
 }
 #endif
 
+#ifdef ENABLE_ATT_DELAYED_RESPONSE
+static void att_server_handle_response_pending(att_server_t *att_server, const att_connection_t *att_connection,
+                                               const uint8_t *eatt_buffer,
+                                               uint16_t att_response_size) {
+    // update state
+    att_server->state = ATT_SERVER_RESPONSE_PENDING;
+
+    // callback with handle ATT_READ_RESPONSE_PENDING for reads
+    if (att_response_size == ATT_READ_RESPONSE_PENDING){
+        // notify services that returned response pending
+        btstack_linked_list_iterator_t it;
+        btstack_linked_list_iterator_init(&it, &service_handlers);
+        while (btstack_linked_list_iterator_has_next(&it)) {
+            att_service_handler_t *handler = (att_service_handler_t *) btstack_linked_list_iterator_next(&it);
+            if ((handler->flags & ATT_SERVICE_FLAGS_DELAYED_RESPONSE) != 0u){
+                handler->flags &= ~ATT_SERVICE_FLAGS_DELAYED_RESPONSE;
+                handler->read_callback(att_connection->con_handle, ATT_READ_RESPONSE_PENDING, 0, NULL, 0);
+            }
+        }
+        // notify main read callback if it returned response pending
+        if ((att_server_flags & ATT_SERVICE_FLAGS_DELAYED_RESPONSE) != 0u){
+            // flag was set by read callback
+            btstack_assert(att_server_client_read_callback != NULL);
+            (*att_server_client_read_callback)(att_connection->con_handle, ATT_READ_RESPONSE_PENDING, 0, NULL, 0);
+        }
+    }
+
+    // free reserved buffer - might trigger next read/write
+    if (eatt_buffer == NULL){
+        l2cap_release_packet_buffer();
+    }
+}
+#endif
+
 // pre: att_server->state == ATT_SERVER_REQUEST_RECEIVED_AND_VALIDATED
 // pre: can send now
 // uses l2cap outgoing buffer if no eatt_buffer provided
@@ -572,18 +613,7 @@ att_server_process_validated_request(att_server_t *att_server, att_connection_t 
 
 #ifdef ENABLE_ATT_DELAYED_RESPONSE
     if ((att_response_size == ATT_READ_RESPONSE_PENDING) || (att_response_size == ATT_INTERNAL_WRITE_RESPONSE_PENDING)){
-        // update state
-        att_server->state = ATT_SERVER_RESPONSE_PENDING;
-
-        // callback with handle ATT_READ_RESPONSE_PENDING for reads
-        if (att_response_size == ATT_READ_RESPONSE_PENDING){
-            att_server_client_read_callback(att_connection->con_handle, ATT_READ_RESPONSE_PENDING, 0, NULL, 0);
-        }
-
-        // free reserved buffer
-        if (eatt_buffer == NULL){
-            l2cap_release_packet_buffer();
-        }
+        att_server_handle_response_pending(att_server, att_connection, eatt_buffer, att_response_size);
         return 0;
     }
 #endif
@@ -767,7 +797,7 @@ static void att_server_handle_can_send_now(void){
     bool can_send_now = true;
     uint8_t phase_index;
 
-    for (phase_index = ATT_SERVER_RUN_PHASE_1_REQUESTS; phase_index <= ATT_SERVER_RUN_PHASE_3_NOTIFICATIONS; phase_index++){
+    for (phase_index = (uint8_t) ATT_SERVER_RUN_PHASE_1_REQUESTS; phase_index <=  (uint8_t) ATT_SERVER_RUN_PHASE_3_NOTIFICATIONS; phase_index++){
         att_server_run_phase_t phase = (att_server_run_phase_t) phase_index;
         hci_con_handle_t skip_connections_until = att_server_last_can_send_now;
         while (true){
@@ -996,7 +1026,7 @@ static void att_server_dispatch_packet_handler(uint8_t packet_type, uint16_t cha
 // ---------------------
 // persistent CCC writes
 static uint32_t att_server_persistent_ccc_tag_for_index(uint8_t index){
-    return ('B' << 24u) | ('T' << 16u) | ('C' << 8u) | index;
+    return (((uint8_t)'B') << 24u) | (((uint8_t)'T') << 16u) | (((uint8_t)'C') << 8u) | index;
 }
 
 static void att_server_persistent_ccc_write(hci_con_handle_t con_handle, uint16_t att_handle, uint16_t value){
@@ -1028,7 +1058,7 @@ static void att_server_persistent_ccc_write(hci_con_handle_t con_handle, uint16_
         int len = tlv_impl->get_tag(tlv_context, tag, (uint8_t *) &entry, sizeof(persistent_ccc_entry_t));
 
         // empty/invalid tag
-        if (len != sizeof(persistent_ccc_entry_t)){
+        if (len != (int) sizeof(persistent_ccc_entry_t)){
             tag_for_empty = tag;
             continue;
         }
@@ -1042,11 +1072,11 @@ static void att_server_persistent_ccc_write(hci_con_handle_t con_handle, uint16_
             lowest_seq_nr = entry.seq_nr;
         }
 
-        if (entry.device_index != le_device_index) continue;
-        if (entry.att_handle   != att_handle)      continue;
+        if ((int)entry.device_index != le_device_index) continue;
+        if (     entry.att_handle   != att_handle)      continue;
 
         // found matching entry
-        if (value != 0){
+        if (value != 0u){
             // update
             if (entry.value == value) {
                 log_info("CCC Index %u: Up-to-date", index);
@@ -1077,7 +1107,7 @@ static void att_server_persistent_ccc_write(hci_con_handle_t con_handle, uint16_
     uint32_t tag_to_use = 0u;
     if (tag_for_empty != 0u){
         tag_to_use = tag_for_empty;
-    } else if (tag_for_lowest_seq_nr){
+    } else if (tag_for_lowest_seq_nr != 0u){
         tag_to_use = tag_for_lowest_seq_nr;
     } else {
         // should not happen
@@ -1110,8 +1140,8 @@ static void att_server_persistent_ccc_clear(att_server_t * att_server){
     for (index=0;index<NVN_NUM_GATT_SERVER_CCC;index++){
         uint32_t tag = att_server_persistent_ccc_tag_for_index(index);
         int len = tlv_impl->get_tag(tlv_context, tag, (uint8_t *) &entry, sizeof(persistent_ccc_entry_t));
-        if (len != sizeof(persistent_ccc_entry_t)) continue;
-        if (entry.device_index != le_device_index) continue;
+        if (len != (int) sizeof(persistent_ccc_entry_t)) continue;
+        if ((int)entry.device_index != le_device_index) continue;
         // delete entry
         log_info("CCC Index %u: Delete", index);
         tlv_impl->delete_tag(tlv_context, tag);
@@ -1134,8 +1164,8 @@ static void att_server_persistent_ccc_restore(att_server_t * att_server, att_con
     for (index=0;index<NVN_NUM_GATT_SERVER_CCC;index++){
         uint32_t tag = att_server_persistent_ccc_tag_for_index(index);
         int len = tlv_impl->get_tag(tlv_context, tag, (uint8_t *) &entry, sizeof(persistent_ccc_entry_t));
-        if (len != sizeof(persistent_ccc_entry_t)) continue;
-        if (entry.device_index != le_device_index) continue;
+        if (len != (int) sizeof(persistent_ccc_entry_t)) continue;
+        if ((int) entry.device_index != le_device_index) continue;
         // simulate write callback
         uint16_t attribute_handle = entry.att_handle;
         uint8_t  value[2];
@@ -1161,11 +1191,6 @@ static att_service_handler_t * att_service_handler_for_handle(uint16_t handle){
         return handler;
     }
     return NULL;
-}
-static att_read_callback_t att_server_read_callback_for_handle(uint16_t handle){
-    att_service_handler_t * handler = att_service_handler_for_handle(handle);
-    if (handler != NULL) return handler->read_callback;
-    return att_server_client_read_callback;
 }
 
 static att_write_callback_t att_server_write_callback_for_handle(uint16_t handle){
@@ -1208,9 +1233,22 @@ static uint8_t att_validate_prepared_write(hci_con_handle_t con_handle){
 }
 
 static uint16_t att_server_read_callback(hci_con_handle_t con_handle, uint16_t attribute_handle, uint16_t offset, uint8_t * buffer, uint16_t buffer_size){
-    att_read_callback_t callback = att_server_read_callback_for_handle(attribute_handle);
-    if (!callback) return 0;
-    return (*callback)(con_handle, attribute_handle, offset, buffer, buffer_size);
+    att_service_handler_t * service = att_service_handler_for_handle(attribute_handle);
+    att_read_callback_t read_callback = (service != NULL) ? service->read_callback : att_server_client_read_callback;
+    uint16_t result = 0;
+    if (read_callback != NULL){
+        result = (*read_callback)(con_handle, attribute_handle, offset, buffer, buffer_size);
+#ifdef ENABLE_ATT_DELAYED_RESPONSE
+        if (result == ATT_READ_RESPONSE_PENDING){
+            if (service == NULL){
+                att_server_flags |= ATT_SERVICE_FLAGS_DELAYED_RESPONSE;
+            } else {
+                service->flags   |= ATT_SERVICE_FLAGS_DELAYED_RESPONSE;
+            }
+        }
+#endif
+    }
+    return result;
 }
 
 static int att_server_write_callback(hci_con_handle_t con_handle, uint16_t attribute_handle, uint16_t transaction_mode, uint16_t offset, uint8_t *buffer, uint16_t buffer_size){
@@ -1241,11 +1279,11 @@ static int att_server_write_callback(hci_con_handle_t con_handle, uint16_t attri
  */
 void att_server_register_service_handler(att_service_handler_t * handler){
     bool att_server_registered = false;
-    if (att_service_handler_for_handle(handler->start_handle)){
+    if (att_service_handler_for_handle(handler->start_handle) != NULL){
         att_server_registered = true;
     }
 
-    if (att_service_handler_for_handle(handler->end_handle)){
+    if (att_service_handler_for_handle(handler->end_handle) != NULL){
         att_server_registered = true;
     }
     
@@ -1253,6 +1291,8 @@ void att_server_register_service_handler(att_service_handler_t * handler){
         log_error("handler for range 0x%04x-0x%04x already registered", handler->start_handle, handler->end_handle);
         return;
     }
+
+    handler->flags = 0;
     btstack_linked_list_add(&service_handlers, (btstack_linked_item_t*) handler);
 }
 
@@ -1455,6 +1495,7 @@ void att_server_deinit(void){
     att_server_client_write_callback = NULL;
     att_client_packet_handler = NULL;
     service_handlers = NULL;
+    att_server_flags = 0;
 }
 
 #ifdef ENABLE_GATT_OVER_EATT
@@ -1590,7 +1631,7 @@ static void att_server_eatt_handler(uint8_t packet_type, uint16_t channel, uint8
 
                 case L2CAP_EVENT_CHANNEL_CLOSED:
                     eatt_bearer = att_server_eatt_bearer_for_cid(l2cap_event_channel_closed_get_local_cid(packet));
-                    btstack_assert(eatt_bearers != NULL);
+                    btstack_assert(eatt_bearer != NULL);
 
                     // TODO: finalize - abort queued writes
 
@@ -1635,8 +1676,6 @@ uint8_t att_server_eatt_init(uint8_t num_eatt_bearers, uint8_t * storage_buffer,
         eatt_bearer++;
     }
     // TODO: define minimum EATT MTU
-    l2cap_ecbm_register_service(att_server_eatt_handler, BLUETOOTH_PSM_EATT, 64, 0, false);
-
-    return 0;
+    return l2cap_ecbm_register_service(att_server_eatt_handler, BLUETOOTH_PSM_EATT, 64, LEVEL_2, false);
 }
 #endif

@@ -198,7 +198,12 @@ uint16_t hci_cmd_create_from_template(uint8_t *hci_cmd_buffer, const hci_cmd_t *
             case 'V':
                 btstack_assert(var_len != INVALID_VAR_LEN);
                 ptr = va_arg(argptr, uint8_t *); // LCOV_EXCL_BR_LINE
-                (void)memcpy(&hci_cmd_buffer[pos], ptr, var_len);
+                // avoid calling  memcpy with NULL and size = 0 <- undefined behaviour
+                if (ptr == NULL){
+                    btstack_assert(var_len == 0);
+                } else {
+                    (void)memcpy(&hci_cmd_buffer[pos], ptr, var_len);
+                }
                 pos += var_len;
                 var_len = INVALID_VAR_LEN;
                 break;
@@ -476,7 +481,14 @@ const hci_cmd_t hci_read_remote_version_information = {
     HCI_OPCODE_HCI_READ_REMOTE_VERSION_INFORMATION, "H"
 };
 
-/** 
+/**
+ * @param handle
+ */
+const hci_cmd_t hci_read_clock_offset = {
+        HCI_OPCODE_HCI_READ_CLOCK_OFFSET, "H"
+};
+
+/**
  * @param handle
  * @param transmit_bandwidth 8000(64kbps)
  * @param receive_bandwidth  8000(64kbps)
@@ -1226,14 +1238,43 @@ const hci_cmd_t hci_read_bd_addr = {
 };
 
 /**
- * Status Paramters
+ * Status Paramteers
  */
+
+/**
+ * @param handle
+ */
+const hci_cmd_t hci_read_failed_contact_counter = {
+    HCI_OPCODE_HCI_READ_FAILED_CONTACT_COUNTER, "H"
+};
+
+/**
+ * @param handle
+ */
+const hci_cmd_t hci_reset_failed_contact_counter = {
+    HCI_OPCODE_HCI_RESET_FAILED_CONTACT_COUNTER, "H"
+};
+
+/**
+ * @param handle
+ */
+const hci_cmd_t hci_read_link_quality = {
+    HCI_OPCODE_HCI_READ_LINK_QUALITY, "H"
+};
 
 /**
  * @param handle
  */
 const hci_cmd_t hci_read_rssi = {
     HCI_OPCODE_HCI_READ_RSSI, "H"
+};
+
+/**
+ * @param handle
+ * @param which_clock
+ */
+const hci_cmd_t hci_read_clock = {
+    HCI_OPCODE_HCI_READ_CLOCK, "H1"
 };
 
 /**
@@ -2415,6 +2456,37 @@ const hci_cmd_t hci_le_transmitter_test_v4 = {
     HCI_OPCODE_HCI_LE_TRANSMITTER_TEST_V4, "111111a[1]1"
 };
 
+/**
+ * @param advertising_handle
+ * @param change_reason
+ */
+const hci_cmd_t hci_le_set_data_related_address_change = {
+    HCI_OPCODE_HCI_LE_SET_DATA_RELATED_ADDRESS_CHANGES, "11"
+};
+
+/**
+ * @param subrate_min
+ * @param subrate_max
+ * @param max_latency
+ * @param continuation_number
+ * @param supervision_timeout
+ */
+const hci_cmd_t hci_le_set_default_subrate = {
+        HCI_OPCODE_HCI_LE_SET_DEFAULT_SUBRATE, "22222"
+};
+
+/**
+ * @param connection_handle
+ * @param subrate_min
+ * @param subrate_max
+ * @param max_latency
+ * @param continuation_number
+ * @param supervision_timeout
+ */
+const hci_cmd_t hci_le_subrate_request = {
+        HCI_OPCODE_HCI_LE_SUBRATE_REQUEST, "H22222"
+};
+
 #endif
 
 // Broadcom / Cypress specific HCI commands
@@ -2427,6 +2499,37 @@ const hci_cmd_t hci_le_transmitter_test_v4 = {
 const hci_cmd_t hci_bcm_enable_wbs = {
     HCI_OPCODE_HCI_BCM_ENABLE_WBS, "12"
         // return: status
+};
+
+/**
+ * @brief Configure PCM2, see Cypress AN214937
+ * @param action
+ * @param test_options
+ * @param op_mode
+ * @param sync_and_clock_options
+ * @param pcm_clock_freq
+ * @param sync_signal_width
+ * @param slot_width
+ * @param number_of_slots
+ * @param bank_0_fill_mode
+ * @param bank_0_number_of_fill_bits
+ * @param bank_0_programmable_fill_data
+ * @param bank_1_fill_mode
+ * @param bank_1_number_of_fill_bits
+ * @param bank_1_programmable_fill_data
+ * @param data_justify_and_bit_order_options
+ * @param ch_0_slot_number
+ * @param ch_1_slot_number
+ * @param ch_2_slot_number
+ * @param ch_3_slot_number
+ * @param ch_4_slot_number
+ * @param ch_0_period
+ * @param ch_1_period
+ * @param ch_2_period
+*
+ */
+const hci_cmd_t hci_bcm_pcm2_setup = {
+        HCI_OPCODE_HCI_BCM_PCM2_SETUP, "11114111111111111111111"
 };
 
 /**

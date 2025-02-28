@@ -316,8 +316,11 @@ typedef struct {
     // if ertm is not mandatory, allow fallback to L2CAP Basic Mode - flag
     uint8_t ertm_mandatory;
 
-    // Frame Chech Sequence (crc16) is present in both directions
+    // Frame Check Sequence local (from ertm config)
     uint8_t fcs_option;
+
+    // Frame Check Sequence was requested by either side
+    bool    fcs_active;
 
     // sender: max num of stored outgoing frames
     uint8_t num_tx_buffers;
@@ -566,9 +569,10 @@ uint8_t l2cap_request_can_send_now_event(uint16_t local_cid);
 /** 
  * @brief Reserve outgoing buffer
  * @note Only for L2CAP Basic Mode Channels
- * @return true on success
+ * @note Must only be called after a 'can send now' check or event
+ * @note Asserts if packet buffer is already reserved
  */
-bool l2cap_reserve_packet_buffer(void);
+void l2cap_reserve_packet_buffer(void);
 
 /** 
  * @brief Get outgoing buffer and prepare data.
@@ -701,6 +705,13 @@ uint8_t l2cap_cbm_create_channel(btstack_packet_handler_t packet_handler, hci_co
  */
 uint8_t l2cap_cbm_provide_credits(uint16_t local_cid, uint16_t credits);
 
+/**
+ * @brief Returns the number of credits provided by peer
+ * @param local_cid
+ * @return number of credits
+ */
+uint16_t l2cap_cbm_available_credits(uint16_t local_cid);
+
 //
 // L2CAP Connection-Oriented Channels in Enhanced Credit-Based Flow-Control Mode - ECBM
 //
@@ -811,6 +822,13 @@ uint8_t l2cap_ecbm_reconfigure_channels(uint8_t num_cids, uint16_t * local_cids,
  * @param con_handle
  */
 void l2cap_ecbm_trigger_pending_connection_responses(hci_con_handle_t con_handle);
+
+/**
+ * @brief Returns the number of outgoing credits provided by peer
+ * @param local_cid
+ * @return number of credits
+ */
+uint16_t l2cap_ecbm_available_credits(uint16_t local_cid);
 
 /**
  * @brief De-Init L2CAP

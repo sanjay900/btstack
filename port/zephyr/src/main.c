@@ -18,7 +18,10 @@
 #include <zephyr/bluetooth/hci_raw.h>
 
 // Nordic NDK
+#if defined(CONFIG_HAS_NORDIC_DRIVERS)
 #include "nrf.h"
+#include <nrfx_clock.h>
+#endif
 
 // BTstack
 #include "btstack_debug.h"
@@ -26,7 +29,13 @@
 #include "btstack_memory.h"
 #include "hci.h"
 #include "hci_dump.h"
+#ifdef ENABLE_HCI_DUMP
+#ifdef ENABLE_SEGGER_RTT_BINARY
+#include "hci_dump_segger_rtt_binary.h"
+#else
 #include "hci_dump_embedded_stdout.h"
+#endif
+#endif
 #include "hci_transport.h"
 #include "bluetooth_company_id.h"
 #include "btstack_chipset_zephyr.h"
@@ -103,7 +112,16 @@ static int transport_send_packet(uint8_t packet_type, uint8_t *packet, int size)
 
             bt_send(buf);
             break;
-        default:
+        case HCI_ISO_DATA_PACKET:
+            buf = bt_buf_get_tx(BT_BUF_ISO_OUT, K_NO_WAIT, packet, size);
+            if (!buf) {
+                log_error("No available ISO buffers!\n");
+                break;
+            }
+
+            bt_send(buf);
+            break;
+       default:
             send_hardware_error(0x01);  // invalid HCI packet
             break;
     }
@@ -131,6 +149,9 @@ static void transport_deliver_controller_packet(struct net_buf * buf){
         uint16_t    size = buf->len;
         uint8_t * packet = buf->data;
         switch (bt_buf_get_type(buf)) {
+            case BT_BUF_ISO_IN:
+                transport_packet_handler(HCI_ISO_DATA_PACKET, packet, size);
+                break;
             case BT_BUF_ACL_IN:
                 transport_packet_handler(HCI_ACL_DATA_PACKET, packet, size);
                 break;
@@ -147,7 +168,6 @@ static void transport_deliver_controller_packet(struct net_buf * buf){
 // btstack_run_loop_zephry.c
 
 // the run loop
-//static btstack_linked_list_t timers;
 
 // TODO: handle 32 bit ms time overrun
 static uint32_t btstack_run_loop_zephyr_get_time_ms(void){
@@ -208,7 +228,7 @@ static const btstack_run_loop_t * btstack_run_loop_zephyr_get_instance(void){
 
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 
-static bd_addr_t local_addr;
+static bd_addr_t local_addr = { 0 };
 
 void nrf_get_static_random_addr( bd_addr_t addr ) {
     // nRF5 chipsets don't have an official public address
@@ -218,9 +238,8 @@ void nrf_get_static_random_addr( bd_addr_t addr ) {
     big_endian_store_16(addr, 0, NRF_FICR->DEVICEADDR[1] | 0xc000);
     big_endian_store_32(addr, 2, NRF_FICR->DEVICEADDR[0]);
 #elif defined(CONFIG_SOC_SERIES_NRF53X)
-    // Using TrustZone this will only work in secure mode
-    big_endian_store_16(addr, 0, NRF_FICR_S->INFO.DEVICEID[1] | 0xc000 );
-    big_endian_store_32(addr, 2, NRF_FICR_S->INFO.DEVICEID[0]);
+    big_endian_store_16(addr, 0, NRF_FICR->INFO.DEVICEID[1] | 0xc000 );
+    big_endian_store_32(addr, 2, NRF_FICR->INFO.DEVICEID[0]);
 #endif
 }
 
@@ -276,6 +295,14 @@ static void packet_handler (uint8_t packet_type, uint16_t channel, uint8_t *pack
                 case HCI_OPCODE_HCI_READ_LOCAL_VERSION_INFORMATION:
                     local_version_information_handler(packet);
                     break;
+                case HCI_OPCODE_HCI_READ_BD_ADDR:
+                    params = hci_event_command_complete_get_return_parameters(packet);
+                    if(params[0] != 0)
+                        break;
+                    if(size < 12)
+                        break;
+                    reverse_48(&params[1], local_addr);
+                    break;
                 case HCI_OPCODE_HCI_ZEPHYR_READ_STATIC_ADDRESS:
                     params = hci_event_command_complete_get_return_parameters(packet);
                     if(params[0] != 0)
@@ -307,6 +334,11 @@ void bt_ctlr_assert_handle(char *file, uint32_t line)
 
 int main(void)
 {
+#if defined(CONFIG_SOC_SERIES_NRF53X)
+    // switch the nrf5340_cpuapp to 128MHz
+    nrfx_clock_divider_set(NRF_CLOCK_DOMAIN_HFCLK, NRF_CLOCK_HFCLK_DIV_1);
+#endif
+
     printf("BTstack booting up..\n");
 
     // start with BTstack init - especially configure HCI Transport
@@ -315,7 +347,12 @@ int main(void)
 
 #ifdef ENABLE_HCI_DUMP
     // enable full log output while porting
-    hci_dump_init(hci_dump_embedded_stdout_get_instance());
+#ifdef ENABLE_SEGGER_RTT_BINARY
+    hci_dump_segger_rtt_binary_open( HCI_DUMP_PACKETLOGGER );
+    hci_dump_init(hci_dump_segger_rtt_binary_get_instance());
+#else
+     hci_dump_init(hci_dump_embedded_stdout_get_instance());
+#endif
 #endif
 
     const btstack_tlv_t * btstack_tlv_impl = btstack_tlv_none_init_instance();

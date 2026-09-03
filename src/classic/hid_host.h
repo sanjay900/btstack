@@ -142,6 +142,7 @@ typedef struct {
  * @param hid_descriptor_storage_len
  */
 void hid_host_init(uint8_t * hid_descriptor_storage, uint16_t hid_descriptor_storage_len);
+void hid_host_set_accept_incoming(bool accept);
 
 /**
  * @brief Register callback for the HID Host. 

@@ -78,6 +78,7 @@ static uint16_t           hid_host_sdp_context_control_cid = 0;
 // connections
 static btstack_linked_list_t hid_host_connections;
 static uint16_t              hid_host_cid_counter = 0;
+static bool                 hid_host_accept_incoming = true;
 
 // lower layer callbacks
 static btstack_context_callback_registration_t hid_host_handle_sdp_client_query_request;
@@ -883,6 +884,10 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
 
                     switch (l2cap_event_incoming_connection_get_psm(packet)){
                         case PSM_HID_CONTROL:
+                            if (!hid_host_accept_incoming){
+                                l2cap_decline_connection(channel);
+                                break;
+                            }
                             if (connection){
                                 l2cap_decline_connection(channel);
                                 break; 
@@ -1176,9 +1181,13 @@ void hid_host_init(uint8_t * hid_descriptor_storage, uint16_t hid_descriptor_sto
     hid_host_descriptor_storage = hid_descriptor_storage;
     hid_host_descriptor_storage_len = hid_descriptor_storage_len;
 
-    // register L2CAP Services for reconnections
-    l2cap_register_service(hid_host_packet_handler, PSM_HID_INTERRUPT, 0xffff, gap_get_security_level());
-    l2cap_register_service(hid_host_packet_handler, PSM_HID_CONTROL, 0xffff, gap_get_security_level());
+    // Outbound host connections bind directly to hid_host_packet_handler.
+    // Incoming HID PSMs are owned by the HID device implementation so it can
+    // coexist with a local Classic HID device such as the Wii Remote.
+}
+
+void hid_host_set_accept_incoming(bool accept){
+    hid_host_accept_incoming = accept;
 }
 
 void hid_host_deinit(void){

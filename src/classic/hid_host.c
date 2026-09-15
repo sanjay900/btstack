@@ -78,7 +78,7 @@ static uint16_t           hid_host_sdp_context_control_cid = 0;
 // connections
 static btstack_linked_list_t hid_host_connections;
 static uint16_t              hid_host_cid_counter = 0;
-static bool                 hid_host_accept_incoming = true;
+static bool                 hid_host_accept_incoming = false;
 
 // lower layer callbacks
 static btstack_context_callback_registration_t hid_host_handle_sdp_client_query_request;
@@ -1187,10 +1187,19 @@ void hid_host_init(uint8_t * hid_descriptor_storage, uint16_t hid_descriptor_sto
 }
 
 void hid_host_set_accept_incoming(bool accept){
+    if (hid_host_accept_incoming == accept) return;
     hid_host_accept_incoming = accept;
+    if (accept) {
+        l2cap_register_service(hid_host_packet_handler, PSM_HID_INTERRUPT, 0xffff, gap_get_security_level());
+        l2cap_register_service(hid_host_packet_handler, PSM_HID_CONTROL, 0xffff, gap_get_security_level());
+    } else {
+        l2cap_unregister_service(PSM_HID_INTERRUPT);
+        l2cap_unregister_service(PSM_HID_CONTROL);
+    }
 }
 
 void hid_host_deinit(void){
+    hid_host_set_accept_incoming(false);
     hid_host_callback = NULL;
     hid_host_descriptor_storage = NULL;
     hid_host_sdp_context_control_cid = 0;

@@ -96,7 +96,9 @@ static int btstack_link_key_db_tlv_get_link_key(bd_addr_t bd_addr, link_key_t li
         if (memcmp(bd_addr, entry.bd_addr, 6)) continue;
         // found, pass back
         (void)memcpy(link_key, entry.link_key, 16);
-        *link_key_type = entry.link_key_type;
+        if (link_key_type) {
+            *link_key_type = entry.link_key_type;
+        }
         return 1;
     }
 	return 0;
@@ -194,7 +196,9 @@ static int  btstack_link_key_db_tlv_iterator_get_next(btstack_link_key_iterator_
         if (size == 0) continue;
         (void)memcpy(bd_addr, entry.bd_addr, 6);
         (void)memcpy(link_key, entry.link_key, 16);
-        *link_key_type = entry.link_key_type;
+        if (link_key_type) {
+            *link_key_type = entry.link_key_type;
+        }
         found = 1;
         break;
     }

@@ -861,6 +861,9 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
             if (!connection) break;
 
             if (channel == connection->interrupt_cid){
+                if (connection->w4_set_protocol_response) {
+                    connection->w4_set_protocol_response = false;
+                }
                 uint8_t * in_place_event = packet - 7;
                 hid_setup_report_event(connection, in_place_event, size);
                 hid_host_callback(HCI_EVENT_PACKET, connection->hid_cid, in_place_event, size + 7);
@@ -1103,11 +1106,18 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
 
                             case HID_HOST_W2_SEND_GET_REPORT:{
                                 uint8_t header = (HID_MESSAGE_TYPE_GET_REPORT << 4) | connection->report_type;
-                                uint8_t report[2];
+                                uint8_t report[4];
                                 uint16_t pos = 0;
+                                if (connection->buffer_size > 0){
+                                    header |= (1 << 3);
+                                }
                                 report[pos++] = header;
                                 if (connection->report_id != HID_REPORT_ID_UNDEFINED){
                                     report[pos++] = (uint8_t) connection->report_id;
+                                }
+                                if (connection->buffer_size > 0){
+                                    little_endian_store_16(report, pos, connection->buffer_size);
+                                    pos += 2;
                                 }
                                 
                                 connection->state = HID_HOST_W4_GET_REPORT_RESPONSE;
@@ -1357,18 +1367,23 @@ uint8_t hid_host_send_virtual_cable_unplug(uint16_t hid_cid){
 }
 
 uint8_t hid_host_send_get_report(uint16_t hid_cid,  hid_report_type_t report_type, uint16_t report_id){
+    return hid_host_send_get_report_with_size(hid_cid, report_type, report_id, 0);
+}
+
+uint8_t hid_host_send_get_report_with_size(uint16_t hid_cid, hid_report_type_t report_type, uint16_t report_id, uint16_t buffer_size){
     hid_host_connection_t * connection = hid_host_get_connection_for_hid_cid(hid_cid);
 
     if (!connection || !connection->control_cid){
         return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
     } 
-    if (connection->state != HID_HOST_CONNECTION_ESTABLISHED){
+    if (connection->state != HID_HOST_CONNECTION_ESTABLISHED || connection->set_protocol || connection->w4_set_protocol_response){
         return ERROR_CODE_COMMAND_DISALLOWED;
     } 
 
     connection->state = HID_HOST_W2_SEND_GET_REPORT;
     connection->report_type = report_type;
     connection->report_id = report_id;
+    connection->buffer_size = buffer_size;
 
     l2cap_request_can_send_now_event(connection->control_cid);
     return ERROR_CODE_SUCCESS;

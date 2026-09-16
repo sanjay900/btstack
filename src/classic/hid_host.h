@@ -117,6 +117,7 @@ typedef struct {
     // get report
     hid_report_type_t report_type;
     uint16_t          report_id;
+    uint16_t          buffer_size;
 
     // control message, bit mask:
     // SUSSPEND             1
@@ -256,6 +257,7 @@ uint8_t hid_host_send_set_report(uint16_t hid_cid, hid_report_type_t report_type
  * @result status ERROR_CODE_SUCCESS on success, otherwise ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER, ERROR_CODE_COMMAND_DISALLOWED
  */
 uint8_t hid_host_send_get_report(uint16_t hid_cid, hid_report_type_t report_type, uint16_t report_id);
+uint8_t hid_host_send_get_report_with_size(uint16_t hid_cid, hid_report_type_t report_type, uint16_t report_id, uint16_t buffer_size);
 
 /**
  * @brief Send HID output report on interrupt channel.

@@ -221,6 +221,12 @@ static l2cap_fixed_channel_t l2cap_fixed_channel_classic_sm;
 
 #ifdef ENABLE_CLASSIC
 static btstack_linked_list_t l2cap_services;
+static gap_security_level_t (*l2cap_classic_incoming_security_level_override)(const bd_addr_t address, uint16_t psm, gap_security_level_t required_level);
+
+void l2cap_set_classic_incoming_security_level_override(
+    gap_security_level_t (*callback)(const bd_addr_t address, uint16_t psm, gap_security_level_t required_level)){
+    l2cap_classic_incoming_security_level_override = callback;
+}
 static uint8_t l2cap_require_security_level2_for_outgoing_sdp;
 static bd_addr_t l2cap_outgoing_classic_addr;
 #endif
@@ -3216,6 +3222,9 @@ static void l2cap_handle_connection_request(hci_con_handle_t handle, uint8_t sig
 
     // if SC only mode is active and service requires encryption, reject connection if SC not active or use security level
     gap_security_level_t required_level = service->required_security_level;
+    if (l2cap_classic_incoming_security_level_override != NULL){
+        required_level = (*l2cap_classic_incoming_security_level_override)(hci_connection->address, psm, required_level);
+    }
     if (gap_get_secure_connections_only_mode() && (required_level != LEVEL_0)){
         if (gap_secure_connection(handle)){
             required_level = LEVEL_4;

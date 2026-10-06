@@ -538,6 +538,15 @@ uint8_t l2cap_send(uint16_t local_cid, const uint8_t *data, uint16_t len);
  */
 uint8_t l2cap_register_service(btstack_packet_handler_t packet_handler, uint16_t psm, uint16_t mtu, gap_security_level_t security_level);
 
+/**
+ * @brief Let the application adjust the security level an incoming Classic connection
+ *        must reach before a service accepts it, per remote device. Used for devices
+ *        like the DualShock 3 that never authenticate. Pass NULL to remove.
+ * @param callback returns the level to require, given the service's configured level
+ */
+void l2cap_set_classic_incoming_security_level_override(
+    gap_security_level_t (*callback)(const bd_addr_t address, uint16_t psm, gap_security_level_t required_level));
+
 /** 
  * @brief Unregisters L2CAP service with given PSM.
  */

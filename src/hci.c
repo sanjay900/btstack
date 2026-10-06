@@ -291,6 +291,7 @@ static void hci_connection_init(hci_connection_t * conn){
     conn->request_role = HCI_ROLE_INVALID;
     conn->sniff_subrating_max_latency = 0xFFFFu;
     conn->qos_service_type = HCI_SERVICE_TYPE_INVALID;
+    conn->request_packet_types = 0;
     btstack_run_loop_set_timer_handler(&conn->timeout, hci_connection_timeout_handler);
     btstack_run_loop_set_timer_context(&conn->timeout, conn);
     hci_connection_timestamp(conn);
@@ -8166,6 +8167,13 @@ static bool hci_run_general_pending_commands(void){
             return true;
         }
 
+        if (connection->request_packet_types != 0){
+            uint16_t packet_types = connection->request_packet_types;
+            connection->request_packet_types = 0;
+            hci_send_cmd(&hci_change_connection_packet_type, connection->con_handle, packet_types);
+            return true;
+        }
+
         if (connection->qos_service_type != HCI_SERVICE_TYPE_INVALID){
             uint8_t service_type = (uint8_t) connection->qos_service_type;
             connection->qos_service_type = HCI_SERVICE_TYPE_INVALID;
@@ -10665,6 +10673,14 @@ uint8_t gap_qos_set(hci_con_handle_t con_handle, hci_service_type_t service_type
     conn->qos_peak_bandwidth = peak_bandwidth;
     conn->qos_latency = latency;
     conn->qos_delay_variation = delay_variation;
+    hci_run();
+    return ERROR_CODE_SUCCESS;
+}
+
+uint8_t gap_request_all_acl_packet_types(hci_con_handle_t con_handle){
+    hci_connection_t * conn = hci_connection_for_handle(con_handle);
+    if (!conn) return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
+    conn->request_packet_types = hci_usable_acl_packet_types();
     hci_run();
     return ERROR_CODE_SUCCESS;
 }

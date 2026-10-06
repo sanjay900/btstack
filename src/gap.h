@@ -1497,6 +1497,15 @@ uint8_t gap_sniff_subrating_configure(hci_con_handle_t con_handle, uint16_t max_
  */
 uint8_t gap_qos_set(hci_con_handle_t con_handle, hci_service_type_t service_type, uint32_t token_rate, uint32_t peak_bandwidth, uint32_t latency, uint32_t delay_variation);
 
+/**
+ * @brief Allow every ACL packet type the controller supports on this connection.
+ *        Connections we create already do this; incoming ones otherwise keep the
+ *        controller default, which can limit the remote to small single-slot packets.
+ * @param con_handle
+ * @return status
+ */
+uint8_t gap_request_all_acl_packet_types(hci_con_handle_t con_handle);
+
 #endif
 
 // LE

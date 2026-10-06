@@ -628,6 +628,9 @@ typedef struct {
     uint16_t sniff_subrating_min_remote_timeout;
     uint16_t sniff_subrating_min_local_timeout;
 
+    // pending HCI Change Connection Packet Type, 0 = none
+    uint16_t request_packet_types;
+
     // QoS
     hci_service_type_t qos_service_type;
     uint32_t qos_token_rate;

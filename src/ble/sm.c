@@ -2853,7 +2853,7 @@ static bool sm_run_ready(void) {
     return true;
 }
 
-static void sm_run(void){
+static void sm_run_once(void){
 
     // ready
     if (sm_run_ready() == false) return;
@@ -3427,6 +3427,25 @@ static void sm_run(void){
         // check again if active connection was released
         if (sm_active_connection_handle != HCI_CON_HANDLE_INVALID) break;
     }
+}
+
+// Events sm_run emits come straight back through sm_event_packet_handler, which calls sm_run again
+// before the state machine has moved on. When re-bonding, GAP_SUBEVENT_BONDING_DELETED is emitted
+// while key distribution is still in progress, so the nested call processes the bonding information
+// again and emits it again, until the stack overflows. Defer nested calls until the current one is done.
+static bool sm_run_active;
+static bool sm_run_requested;
+static void sm_run(void){
+    if (sm_run_active){
+        sm_run_requested = true;
+        return;
+    }
+    sm_run_active = true;
+    do {
+        sm_run_requested = false;
+        sm_run_once();
+    } while (sm_run_requested);
+    sm_run_active = false;
 }
 
 // sm_aes128_state stays active

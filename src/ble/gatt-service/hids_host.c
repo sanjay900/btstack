@@ -731,6 +731,7 @@ static void hids_host_send_next_query(void * context){
             printf("\n\nRead REPORT_MAP (Handle 0x%04X) HID Descriptor of service %d:\n", client->services[client->service_index].report_map_value_handle, client->service_index);
 #endif
             client->state = HIDS_HOST_STATE_W4_REPORT_MAP_HID_DESCRIPTOR;
+            hids_host_descriptor_storage_init(client, client->service_index);
 
             // result in GATT_EVENT_LONG_CHARACTERISTIC_VALUE_QUERY_RESULT
             att_status = gatt_client_read_long_value_of_characteristic_using_value_handle(&handle_gatt_client_event, client->con_handle, client->services[client->service_index].report_map_value_handle);
@@ -1035,7 +1036,12 @@ static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel, uint
 #ifdef ENABLE_TESTING_SUPPORT
                 printf("HID Service: start handle 0x%04X, end handle 0x%04X\n", client->services[index].start_handle, client->services[index].end_handle);
 #endif
-                hids_host_descriptor_storage_init(client, index);
+                // Storage is reserved when this service's report map is read, once the maps before it are
+                // in. Reserving it now would give every service the same offset, as nothing is stored yet,
+                // so each map would overwrite the one before it.
+                client->services[index].hid_descriptor_len = 0;
+                client->services[index].hid_descriptor_max_len = 0;
+                client->services[index].hid_descriptor_offset = 0;
             }  else {
                 log_info("%d hid services found, only first %d can be stored, increase MAX_NUM_HID_SERVICES", client->num_instances + 1, MAX_NUM_HID_SERVICES);
             }

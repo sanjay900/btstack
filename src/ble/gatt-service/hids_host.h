@@ -188,6 +188,8 @@ typedef struct {
 
     uint8_t num_instances;
     hid_service_t services[MAX_NUM_HID_SERVICES];
+    // which part of the HID descriptor storage holds this connection's report maps
+    uint8_t storage_slot;
 
     // used for discovering characteristics
     uint8_t service_index;
@@ -363,6 +365,15 @@ const uint8_t * hids_host_descriptor_storage_get_descriptor_data(uint16_t hids_c
  * @return length
  */
 uint16_t hids_host_descriptor_storage_get_descriptor_len(uint16_t hids_cid, uint8_t service_index);
+
+/*
+ * @brief Get descriptor status
+ *
+ * @param hid_cid
+ * @return ERROR_CODE_SUCCESS if the whole descriptor was stored,
+ *         ERROR_CODE_MEMORY_CAPACITY_EXCEEDED if it was truncated to fit the storage
+ */
+uint8_t hids_host_descriptor_storage_get_descriptor_status(uint16_t hids_cid, uint8_t service_index);
 
 /**
  * @brief De-initialize HID Service Client. 

@@ -136,33 +136,55 @@ static hids_host_t * hids_get_client_for_cid(uint16_t hids_cid){
 
 // START Descriptor Storage Util
 
-static uint16_t hids_host_descriptors_len(hids_host_t * client){
-    uint16_t descriptors_len = 0;
-    uint8_t service_index;
-    for (service_index = 0; service_index < client->num_instances; service_index++){
-        descriptors_len += client->services[service_index].hid_descriptor_len;
-    }
-    return descriptors_len;
+// Each connection gets its own fixed slot of the storage, so connections reading their report maps at the
+// same time can't overwrite each other, and one going away doesn't move the maps of the others
+#ifdef MAX_NR_HIDS_HOSTS
+#define HIDS_HOST_DESCRIPTOR_STORAGE_SLOTS MAX_NR_HIDS_HOSTS
+#else
+#define HIDS_HOST_DESCRIPTOR_STORAGE_SLOTS 1
+#endif
+#define HIDS_HOST_DESCRIPTOR_STORAGE_NO_SLOT 0xff
+
+static uint16_t hids_host_descriptor_storage_slot_len(void){
+    return hids_host_descriptor_storage_len / HIDS_HOST_DESCRIPTOR_STORAGE_SLOTS;
 }
 
-static uint16_t hids_host_descriptor_storage_get_available_space(void){
-    // assumes all descriptors are back to back
-    uint16_t free_space = hids_host_descriptor_storage_len;
-    btstack_linked_list_iterator_t it;
-    btstack_linked_list_iterator_init(&it, &clients);
-    while (btstack_linked_list_iterator_has_next(&it)){
-        hids_host_t * client = (hids_host_t *)btstack_linked_list_iterator_next(&it);
-        free_space -= hids_host_descriptors_len(client);
+static uint8_t hids_host_descriptor_storage_find_free_slot(void){
+    uint8_t slot;
+    for (slot = 0; slot < HIDS_HOST_DESCRIPTOR_STORAGE_SLOTS; slot++){
+        bool used = false;
+        btstack_linked_list_iterator_t it;
+        btstack_linked_list_iterator_init(&it, &clients);
+        while (btstack_linked_list_iterator_has_next(&it)){
+            hids_host_t * client = (hids_host_t *)btstack_linked_list_iterator_next(&it);
+            if (client->storage_slot == slot){
+                used = true;
+                break;
+            }
+        }
+        if (!used) return slot;
     }
-    return free_space;
+    return HIDS_HOST_DESCRIPTOR_STORAGE_NO_SLOT;
 }
 
 static void hids_host_descriptor_storage_init(hids_host_t * client, uint8_t service_index){
-    // reserve remaining space for this connection
-    uint16_t available_space = hids_host_descriptor_storage_get_available_space();
-    client->services[service_index].hid_descriptor_len = 0;
-    client->services[service_index].hid_descriptor_max_len = available_space;
-    client->services[service_index].hid_descriptor_offset = hids_host_descriptor_storage_len - available_space;
+    hid_service_t * service = &client->services[service_index];
+    service->hid_descriptor_len = 0;
+    service->hid_descriptor_status = ERROR_CODE_SUCCESS;
+    if (client->storage_slot == HIDS_HOST_DESCRIPTOR_STORAGE_NO_SLOT){
+        service->hid_descriptor_offset = 0;
+        service->hid_descriptor_max_len = 0;
+        return;
+    }
+    // services are read one after another, so the ones before this are already in the slot
+    uint16_t used = 0;
+    uint8_t i;
+    for (i = 0; i < service_index; i++){
+        used += client->services[i].hid_descriptor_len;
+    }
+    uint16_t slot_len = hids_host_descriptor_storage_slot_len();
+    service->hid_descriptor_offset = (client->storage_slot * slot_len) + used;
+    service->hid_descriptor_max_len = slot_len - used;
 }
 
 static bool hids_host_descriptor_storage_store(hids_host_t * client, uint8_t service_index, uint8_t byte){
@@ -176,32 +198,6 @@ static bool hids_host_descriptor_storage_store(hids_host_t * client, uint8_t ser
 
 static void hids_host_descriptor_storage_delete(hids_host_t * client){
     uint8_t service_index;
-
-    // calculate descriptors len
-    uint16_t descriptors_len = hids_host_descriptors_len(client);
-
-    if (descriptors_len > 0){
-        // move higher descriptors down
-        uint16_t next_offset = client->services[0].hid_descriptor_offset + descriptors_len;
-        memmove(&hids_host_descriptor_storage[client->services[0].hid_descriptor_offset],
-                &hids_host_descriptor_storage[next_offset],
-                hids_host_descriptor_storage_len - next_offset);
-
-        // fix descriptor offset of higher descriptors
-        btstack_linked_list_iterator_t it;
-        btstack_linked_list_iterator_init(&it, &clients);
-        while (btstack_linked_list_iterator_has_next(&it)){
-            hids_host_t * conn = (hids_host_t *)btstack_linked_list_iterator_next(&it);
-            if (conn == client) continue;
-            for (service_index = 0; service_index < client->num_instances; service_index++){
-                if (conn->services[service_index].hid_descriptor_offset >= next_offset){
-                    conn->services[service_index].hid_descriptor_offset -= descriptors_len;
-                }
-            }
-        }
-    }
-
-    // clear descriptors
     for (service_index = 0; service_index < client->num_instances; service_index++){
         client->services[service_index].hid_descriptor_len = 0;
         client->services[service_index].hid_descriptor_offset = 0;
@@ -228,6 +224,17 @@ uint16_t hids_host_descriptor_storage_get_descriptor_len(uint16_t hids_cid, uint
         return 0;
     }
     return client->services[service_index].hid_descriptor_len;
+}
+
+uint8_t hids_host_descriptor_storage_get_descriptor_status(uint16_t hids_cid, uint8_t service_index){
+    hids_host_t * client = hids_get_client_for_cid(hids_cid);
+    if (client == NULL){
+        return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
+    }
+    if (service_index >= client->num_instances){
+        return ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE;
+    }
+    return client->services[service_index].hid_descriptor_status;
 }
 
 // END Descriptor Storage Util
@@ -501,6 +508,11 @@ static hids_host_t * hids_host_create(hci_con_handle_t con_handle, uint16_t cid)
     client->state = HIDS_HOST_STATE_IDLE;
     client->cid = cid;
     client->con_handle = con_handle;
+    // before adding it, as it would otherwise see its own (unset) slot as taken
+    client->storage_slot = hids_host_descriptor_storage_find_free_slot();
+    if (client->storage_slot == HIDS_HOST_DESCRIPTOR_STORAGE_NO_SLOT){
+        log_error("No HID descriptor storage slot free, increase MAX_NR_HIDS_HOSTS");
+    }
 
     btstack_linked_list_add(&clients, (btstack_linked_item_t *) client);
     return client;

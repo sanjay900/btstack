@@ -169,6 +169,16 @@ void hid_host_register_packet_handler(btstack_packet_handler_t callback);
  */
 uint8_t hid_host_connect(bd_addr_t remote_addr, hid_protocol_mode_t protocol_mode, uint16_t * hid_cid);
 
+/**
+ * @brief Connect to HID device on the standard PSMs in report mode, skipping the SDP query and SET_PROTOCOL.
+ * For devices that drop the connection if the host does anything but open HID when they reconnect (Switch controllers).
+ * HID_SUBEVENT_DESCRIPTOR_AVAILABLE comes with ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE.
+ * @param remote_addr
+ * @param hid_cid to use for other commands
+ * @result status ERROR_CODE_SUCCESS on success, otherwise ERROR_CODE_COMMAND_DISALLOWED, BTSTACK_MEMORY_ALLOC_FAILED
+ */
+uint8_t hid_host_connect_without_sdp(bd_addr_t remote_addr, uint16_t * hid_cid);
+
 
 /**
  * @brief Accept incoming HID connection, this should be called upon receiving HID_SUBEVENT_INCOMING_CONNECTION event.

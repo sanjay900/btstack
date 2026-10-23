@@ -7906,7 +7906,11 @@ static bool hci_run_general_pending_commands(void){
 #ifdef ENABLE_CLASSIC
                     case BD_ADDR_TYPE_ACL:
                         log_info("sending hci_create_connection");
-                        hci_send_cmd(&hci_create_connection, connection->address, hci_usable_acl_packet_types(), 1, 0, 0, hci_stack->allow_role_switch);
+                        // Page scan repetition mode R2 rather than R1: with R1 the A/B trains swap every
+                        // 1.28s, so a device scanning every 2.56s (Switch controllers) always lands on the
+                        // same train and can never be reached. R2 still reaches R1 devices. l2cap_run()
+                        // sends its own Create Connection and does the same.
+                        hci_send_cmd(&hci_create_connection, connection->address, hci_usable_acl_packet_types(), 2, 0, 0, hci_stack->allow_role_switch);
                         break;
 #endif
                     default:
@@ -8347,8 +8351,12 @@ static void hci_run(void){
     // send host num completed packets next as they don't require num_cmd_packets > 0
     if (!hci_can_send_command_packet_transport()) return;
     if (hci_stack->host_completed_packets){
-        hci_host_num_completed_packets();        
-        return;
+        hci_host_num_completed_packets();
+        // A synchronous transport (CYW43) is already done with the packet and never triggers
+        // another hci_run() for it, so returning here left anything else queued (e.g. Read
+        // Encryption Key Size, which L2CAP waits on after encryption) stuck until some
+        // unrelated event came in. Seconds later, Switch controllers have given up.
+        if (!hci_transport_synchronous()) return;
     }
 #endif
 

@@ -1310,6 +1310,35 @@ uint8_t hid_host_connect(bd_addr_t remote_addr, hid_protocol_mode_t protocol_mod
     return status;
 }
 
+uint8_t hid_host_connect_without_sdp(bd_addr_t remote_addr, uint16_t * hid_cid){
+    if (hid_cid == NULL) {
+        return ERROR_CODE_COMMAND_DISALLOWED;
+    }
+
+    hid_host_connection_t * connection = hid_host_get_connection_for_bd_addr(remote_addr);
+    if (connection){
+        return ERROR_CODE_COMMAND_DISALLOWED;
+    }
+
+    connection = hid_host_create_connection(remote_addr);
+    if (!connection) return BTSTACK_MEMORY_ALLOC_FAILED;
+
+    *hid_cid = connection->hid_cid;
+
+    // Standard PSMs and report mode, without a descriptor and without SET_PROTOCOL
+    connection->incoming = false;
+    connection->requested_protocol_mode = HID_PROTOCOL_MODE_REPORT;
+    connection->hid_descriptor_status = ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE;
+    connection->control_psm = BLUETOOTH_PSM_HID_CONTROL;
+    connection->interrupt_psm = BLUETOOTH_PSM_HID_INTERRUPT;
+    connection->state = HID_HOST_W4_CONTROL_CONNECTION_ESTABLISHED;
+    uint8_t status = l2cap_create_channel(hid_host_packet_handler, connection->remote_addr, BLUETOOTH_PSM_HID_CONTROL, 0xffff, &connection->control_cid);
+    if (status != ERROR_CODE_SUCCESS){
+        hid_host_finalize_connection(connection);
+    }
+    return status;
+}
+
 
 void hid_host_disconnect(uint16_t hid_cid){
     hid_host_connection_t * connection = hid_host_get_connection_for_hid_cid(hid_cid);

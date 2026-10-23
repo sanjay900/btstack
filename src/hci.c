@@ -5106,6 +5106,10 @@ static void event_handler(uint8_t *packet, uint16_t size){
             conn = hci_connection_for_bd_addr_and_type(addr, addr_type);
             if (!conn) break;
             conn->role = (hci_role_t) packet[9];
+            // only the master can set the supervision timeout, so a link that switched to us needs it now
+            if ((hci_stack->link_supervision_timeout != HCI_LINK_SUPERVISION_TIMEOUT_DEFAULT) && (conn->role == HCI_ROLE_MASTER) && (conn->state == OPEN)){
+                conn->gap_connection_tasks_pending |= GAP_CONNECTION_TASK_WRITE_SUPERVISION_TIMEOUT;
+            }
             break;
 #endif
 

@@ -356,6 +356,7 @@ static hid_host_connection_t * hid_host_create_connection(bd_addr_t remote_addr)
     connection->interrupt_cid = 0;
     connection->interrupt_psm = 0;
     connection->con_handle = HCI_CON_HANDLE_INVALID;
+    connection->skip_sdp = false;
 
     (void)memcpy(connection->remote_addr, remote_addr, 6);
     btstack_linked_list_add_tail(&hid_host_connections, (btstack_linked_item_t *) connection);
@@ -972,6 +973,13 @@ static void hid_host_packet_handler(uint8_t packet_type, uint16_t channel, uint8
                                         log_info("Incoming interrupt connection opened: set boot mode");
                                         break;
                                     default:
+                                        if (connection->skip_sdp){
+                                            log_info("Incoming interrupt connection opened: report mode without SDP");
+                                            connection->protocol_mode = HID_PROTOCOL_MODE_REPORT;
+                                            connection->hid_descriptor_status = ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE;
+                                            hid_emit_descriptor_available_event(connection);
+                                            break;
+                                        }
                                         // SDP query
                                         log_info("Incoming interrupt connection opened: start SDP query");
                                         connection->state = HID_HOST_W2_SEND_SDP_QUERY;
@@ -1256,6 +1264,21 @@ uint8_t hid_host_accept_connection(uint16_t hid_cid, hid_protocol_mode_t protoco
     }
     
     connection->requested_protocol_mode = protocol_mode;
+    l2cap_accept_connection(connection->control_cid);
+    return ERROR_CODE_SUCCESS;
+}
+
+uint8_t hid_host_accept_connection_without_sdp(uint16_t hid_cid){
+    hid_host_connection_t * connection = hid_host_get_connection_for_hid_cid(hid_cid);
+    if (!connection){
+        return ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER;
+    }
+    if (connection->state != HID_HOST_W4_CONTROL_CONNECTION_ESTABLISHED){
+        return ERROR_CODE_COMMAND_DISALLOWED;
+    }
+
+    connection->requested_protocol_mode = HID_PROTOCOL_MODE_REPORT;
+    connection->skip_sdp = true;
     l2cap_accept_connection(connection->control_cid);
     return ERROR_CODE_SUCCESS;
 }

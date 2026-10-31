@@ -96,6 +96,8 @@ typedef struct {
 
     hid_host_state_t state;
     bool incoming;
+    // incoming connection accepted with hid_host_accept_connection_without_sdp
+    bool skip_sdp;
     hid_protocol_mode_t protocol_mode;
     
     bool set_protocol;
@@ -187,6 +189,15 @@ uint8_t hid_host_connect_without_sdp(bd_addr_t remote_addr, uint16_t * hid_cid);
  * @result status ERROR_CODE_SUCCESS on success, otherwise ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER, ERROR_CODE_COMMAND_DISALLOWED
  */
 uint8_t hid_host_accept_connection(uint16_t hid_cid, hid_protocol_mode_t protocol_mode);
+
+/**
+ * @brief Accept incoming HID connection in report mode, skipping the SDP query and SET_PROTOCOL, like
+ * hid_host_connect_without_sdp. Call upon receiving HID_SUBEVENT_INCOMING_CONNECTION event.
+ * HID_SUBEVENT_DESCRIPTOR_AVAILABLE comes with ERROR_CODE_UNSUPPORTED_FEATURE_OR_PARAMETER_VALUE.
+ * @param hid_cid
+ * @result status ERROR_CODE_SUCCESS on success, otherwise ERROR_CODE_UNKNOWN_CONNECTION_IDENTIFIER, ERROR_CODE_COMMAND_DISALLOWED
+ */
+uint8_t hid_host_accept_connection_without_sdp(uint16_t hid_cid);
 
 /**
  * @brief Decline incoming HID connection, this should be called upon receiving HID_SUBEVENT_INCOMING_CONNECTION event.

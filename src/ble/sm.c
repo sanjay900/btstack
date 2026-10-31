@@ -3987,6 +3987,13 @@ static void sm_event_packet_handler (uint8_t packet_type, uint16_t channel, uint
                     gap_local_bd_addr(sm_conn->sm_own_address);
                     sm_conn->sm_cid = L2CAP_CID_BR_EDR_SECURITY_MANAGER;
                     sm_conn->sm_engine_state = SM_BR_EDR_W4_ENCRYPTION_COMPLETE;
+#ifndef ENABLE_CROSS_TRANSPORT_KEY_DERIVATION
+                    // Without CTKD there's nothing for SM to do on a classic link. Skip the LE address
+                    // lookup, as a failed one sends a Security Request over BR/EDR when we're the slave
+                    // (sm_set_request_security), which nothing answers, and its 30s timeout holds SM
+                    // from every other connection.
+                    sm_conn->sm_irk_lookup_state = IRK_LOOKUP_FAILED;
+#endif
 			        break;
 
 #endif

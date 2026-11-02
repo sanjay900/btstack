@@ -49,9 +49,7 @@
 
 #include <stdio.h>
 
-#ifndef ENABLE_PRINTF_HEXDUMP
-#error "HCI Dump on stdout requires ENABLE_PRINTF_HEXDUMP to be defined. Use different hci dump implementation or add ENABLE_PRINTF_HEXDUMP to btstack_config.h"
-#endif
+#ifdef ENABLE_PRINTF_HEXDUMP
 
 static char log_message_buffer[256];
 
@@ -163,3 +161,8 @@ const hci_dump_t * hci_dump_embedded_stdout_get_instance(void){
     };
     return &hci_dump_instance;
 }
+#else
+const hci_dump_t * hci_dump_embedded_stdout_get_instance(void){
+    return NULL;
+}
+#endif
